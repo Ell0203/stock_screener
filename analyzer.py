@@ -74,6 +74,7 @@ class QuantAnalyzer:
 
     def _fetch_macro_data(self):
         # 거시적(장기) 분석용 데이터 수집 뼈대 (향후 구현 예정)
+        # 예: self.macro_data = yf.download(self.ticker, period="3y", interval="1wk")
         pass
 
     def _fetch_supply_data(self, days=5):
@@ -136,7 +137,7 @@ class QuantAnalyzer:
             
             if not foreign_consecutive and self.supply_data[-1]['foreign_net'] < 0:
                 bonus -= 10
-                signals.append("⚠️ [수급 경고] 외국인이 오늘 단기 차익을 실현하며 매도 중입니다. 기술적 타점이 나왔더라도 진입 재고를 권장합니다.")
+                signals.append("⚠️ [수급 경 경고] 외국인이 오늘 단기 차익을 실현하며 매도 중입니다. 기술적 타점이 나왔더라도 진입 재고를 권장합니다.")
                 
         return bonus, signals
 
