@@ -78,39 +78,62 @@ class QuantAnalyzer:
         pass
 
     def _fetch_supply_data(self, days=5):
-        """최근 N일 외인/기관 수급 데이터 (국내 주식 전용)"""
+        """최근 N일 외인/상세기관 수급 데이터 (국내 주식 전용, pykrx 활용)"""
         try:
-            # 종목코드 추출 (005930.KS -> 005930)
             code = self.ticker.replace('.KS', '').replace('.KQ', '')
-            
             if not code.isdigit():
-                self.supply_data = []  # 미국 주식은 수급 데이터 없음
+                self.supply_data = []
                 return
             
             end = datetime.datetime.today().strftime('%Y%m%d')
-            # 주말/공휴일 고려해서 넉넉하게 2배로 가져온 후 자름
+            # 휴장일 감안 여유있게 가져오기
             start = (datetime.datetime.today() - datetime.timedelta(days=days*3)).strftime('%Y%m%d')
             
-            df = stock.get_market_trading_volume_by_date(start, end, code)
+            df = stock.get_market_trading_volume_by_date(start, end, code, detail=True)
             
             if df.empty:
                 self.supply_data = []
                 return
                 
-            df = df.tail(days)  # 최근 N거래일만
+            df = df.tail(days)
             
             result = []
             for date, row in df.iterrows():
+                # pykrx의 detail=True 일 때의 컬럼명 (기관합계, 외국인, 개인 + 투신, 연기금 등 상세)
+                # 버전/종목별로 컬럼 존재여부가 다를 수 있으므로 .get() 사용
+                
+                f_net = int(row.get('외국인합계', row.get('외국인', 0)))
+                o_net = int(row.get('기관합계', 0))
+                p_net = int(row.get('개인', 0))
+                
+                # 상세 기관 추출
+                trust_net = int(row.get('투신', 0))
+                pension_net = int(row.get('연기금', 0))
+                pef_net = int(row.get('사모펀드', 0))
+                bank_net = int(row.get('은행', 0))
+                fin_net = int(row.get('금융투자', 0))
+                insur_net = int(row.get('보험', 0))
+                etc_fin_net = int(row.get('기타금융', 0))
+                
+                
                 result.append({
                     "date": date.strftime('%Y-%m-%d'),
-                    "foreign_net":  int(row.get('외국인합계', row.get('외국인', 0))),
-                    "institution_net": int(row.get('기관합계', 0)),
-                    "individual_net":  int(row.get('개인', 0)),
+                    "foreign_net": f_net,
+                    "institution_net": o_net,
+                    "individual_net": p_net,
+                    # 상세 기관
+                    "trust_net": trust_net,
+                    "pension_net": pension_net,
+                    "pef_net": pef_net,
+                    "bank_net": bank_net,
+                    "fin_net": fin_net,
+                    "insur_net": insur_net,
+                    "etc_fin_net": etc_fin_net
                 })
             self.supply_data = result
             
         except Exception as e:
-            print(f"수급 데이터 수집 실패: {e}")
+            print(f"수급(pykrx) 데이터 수집 실패: {e}")
             self.supply_data = []
 
     def _score_supply(self):
