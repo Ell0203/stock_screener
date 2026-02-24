@@ -3,3 +3,4 @@ yfinance>=0.2.40
 pandas>=2.0.0
 numpy>=1.24.0
 finance-datareader>=0.9.94
+pykrx>=1.0.40

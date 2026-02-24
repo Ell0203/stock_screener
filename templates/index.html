@@ -45,6 +45,54 @@
             font-size: 14px;
             margin-bottom: 6px;
         }
+
+        /* 수급 테이블 디자인 */
+        .supply-container {
+            margin-top: 1.5rem;
+            background: rgba(30, 41, 59, 0.4);
+            border-radius: 8px;
+            padding: 1rem;
+            display: none;
+        }
+
+        .supply-title {
+            margin-bottom: 0.8rem;
+            color: var(--text-secondary);
+            font-size: 0.95rem;
+            letter-spacing: 1px;
+        }
+
+        .supply-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.85rem;
+            text-align: right;
+        }
+
+        .supply-table th,
+        .supply-table td {
+            padding: 8px 4px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .supply-table th {
+            text-align: right;
+            color: var(--text-secondary);
+            font-weight: 600;
+        }
+
+        .supply-table th:first-child,
+        .supply-table td:first-child {
+            text-align: left;
+        }
+
+        .text-danger {
+            color: #ff3366;
+        }
+
+        .text-success {
+            color: #00ff88;
+        }
     </style>
 </head>
 
@@ -105,6 +153,22 @@
                     <ul id="signalList" class="signal-list">
                         <!-- Signals will be injected here -->
                     </ul>
+
+                    <div id="supplyContainer" class="supply-container">
+                        <div class="supply-title">📊 최근 메이저 수급 (순매수 물량)</div>
+                        <table class="supply-table" id="supplyTable">
+                            <thead>
+                                <tr>
+                                    <th>날짜</th>
+                                    <th>외국인</th>
+                                    <th>기관</th>
+                                    <th>개인</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                            </tbody>
+                        </table>
+                    </div>
 
                     <div class="macro-section" id="macroStatus">
                         거시적 상태: 대기중...
@@ -381,6 +445,33 @@
 
             const signalsHtml = data.analysis.signals.map(s => `<li class="signal-item">${s}</li>`).join('');
             document.getElementById('signalList').innerHTML = signalsHtml;
+
+            // 수급 테이블 렌더링
+            const supplyData = data.analysis.supply_data;
+            const supplyContainer = document.getElementById('supplyContainer');
+            if (supplyData && supplyData.length > 0) {
+                supplyContainer.style.display = 'block';
+                const tbody = document.querySelector('#supplyTable tbody');
+                // 역순 렌더링 (최신 날짜가 위로 오도록)
+                const html = [...supplyData].reverse().map(row => {
+                    const fmt = (val) => {
+                        const str = val.toLocaleString();
+                        return val > 0 ? `<span class="text-success">+${str}</span>`
+                            : (val < 0 ? `<span class="text-danger">${str}</span>` : '0');
+                    };
+                    return `
+                        <tr>
+                            <td>${row.date.slice(5)}</td>
+                            <td>${fmt(row.foreign_net)}</td>
+                            <td>${fmt(row.institution_net)}</td>
+                            <td>${fmt(row.individual_net)}</td>
+                        </tr>
+                    `;
+                }).join('');
+                tbody.innerHTML = html;
+            } else {
+                supplyContainer.style.display = 'none';
+            }
 
             document.getElementById('macroStatus').innerText = data.analysis.macro_status;
 

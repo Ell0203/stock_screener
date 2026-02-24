@@ -17,7 +17,7 @@ def analyze_stock():
 
     try:
         qa = QuantAnalyzer(ticker, mode=mode)
-        qa._fetch_micro_data()
+        qa.fetch_data() # 내부 데이터 수집 메서드 직접 참조 방지
         
         # 분석을 실행합니다.
         analysis = qa.analyze()
@@ -34,7 +34,9 @@ def analyze_stock():
             "chart_data": chart_data
         })
     except Exception as e:
-        return jsonify({"error": f"데이터 수집 실패: {str(e)}"}), 500
+        import traceback
+        print(traceback.format_exc()) # 서버 로그에 상세 에러 출력
+        return jsonify({"error": f"분석 실패: {str(e)}"}), 500
 
 if __name__ == '__main__':
     # 로컬에서만 접근 가능한 서버를 엽니다.
