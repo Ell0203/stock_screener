@@ -35,11 +35,15 @@
             <div class="card">
                 <h2 style="margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center;">
                     <span id="chartTitle">TSLA 일봉 차트</span>
-                    <div style="display: flex; gap: 1rem; font-size: 0.9rem; color: var(--text-secondary);">
+                    <div style="display: flex; gap: 0.8rem; font-size: 0.85rem; color: var(--text-secondary);">
                         <label style="cursor: pointer;"><input type="checkbox" id="toggleEma" checked
-                                onchange="toggleIndicators()"> EMA 라인표시</label>
-                        <label style="cursor: pointer;"><input type="checkbox" id="toggleSignal" checked
-                                onchange="toggleIndicators()"> 매수 타점표시</label>
+                                onchange="toggleIndicators()"> EMA 라인</label>
+                        <label style="cursor: pointer;"><input type="checkbox" id="toggleShort" checked
+                                onchange="toggleIndicators()"> 🟩 단기</label>
+                        <label style="cursor: pointer;"><input type="checkbox" id="toggleMacd" checked
+                                onchange="toggleIndicators()"> 🔵 MACD</label>
+                        <label style="cursor: pointer;"><input type="checkbox" id="toggleVcp" checked
+                                onchange="toggleIndicators()"> 🟣 VCP</label>
                     </div>
                 </h2>
                 <div id="tvchart" class="chart-container"></div>
@@ -186,13 +190,17 @@
             // 매수 타점 마커(화살표) 생성 로직
             currentMarkers = [];
             data.chart_data.forEach(d => {
-                if (d.buy_swing) {
+                if (d.buy_swing_vcp) {
                     currentMarkers.push({
-                        time: d.time, position: 'belowBar', color: '#00b8ff', shape: 'arrowUp', text: '스윙 진입'
+                        time: d.time, position: 'belowBar', color: '#b300ff', shape: 'arrowUp', text: 'VCP 스윙', type: 'vcp'
+                    });
+                } else if (d.buy_swing_macd) {
+                    currentMarkers.push({
+                        time: d.time, position: 'belowBar', color: '#00b8ff', shape: 'arrowUp', text: 'MACD 스윙', type: 'macd'
                     });
                 } else if (d.buy_short) {
                     currentMarkers.push({
-                        time: d.time, position: 'belowBar', color: '#00ff88', shape: 'arrowUp', text: '단기 진입'
+                        time: d.time, position: 'belowBar', color: '#00ff88', shape: 'arrowUp', text: '단기 진입', type: 'short'
                     });
                 }
             });
@@ -223,13 +231,22 @@
         function toggleIndicators() {
             if (!chart) return;
             const showEma = document.getElementById('toggleEma').checked;
-            const showSignal = document.getElementById('toggleSignal').checked;
+            const showShort = document.getElementById('toggleShort').checked;
+            const showMacd = document.getElementById('toggleMacd').checked;
+            const showVcp = document.getElementById('toggleVcp').checked;
 
             ema21Series.applyOptions({ visible: showEma });
             ema50Series.applyOptions({ visible: showEma });
             ema200Series.applyOptions({ visible: showEma });
 
-            candleSeries.setMarkers(showSignal ? currentMarkers : []);
+            const visibleMarkers = currentMarkers.filter(m => {
+                if (m.type === 'short') return showShort;
+                if (m.type === 'macd') return showMacd;
+                if (m.type === 'vcp') return showVcp;
+                return true;
+            });
+
+            candleSeries.setMarkers(visibleMarkers);
         }
 
         // 창 크기 조절 시 차트 리사이징 대응

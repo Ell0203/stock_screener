@@ -102,7 +102,22 @@ class QuantAnalyzer:
         # 4. 거래량 평균 (20일)
         df['Vol_SMA_20'] = df['Volume'].rolling(window=20).mean()
 
-        # --- Pine Script 매수 로직 구현 ---
+        # --- 1안: MACD 계산 ---
+        df['ema_12'] = df['Close'].ewm(span=12, adjust=False).mean()
+        df['ema_26'] = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD'] = df['ema_12'] - df['ema_26']
+        df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+        df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+
+        # --- 3안: VCP (변동성/거래량 고갈) 조건 계산 ---
+        # 최근 5일간의 고점-저점 폭이 ATR의 1.5배 이내로 수렴 (Tightness)
+        df['recent_range'] = df['High'].rolling(5).max() - df['Low'].rolling(5).min()
+        df['vcp_tight'] = df['recent_range'] < (df['ATR_14'] * 1.5)
+        # 거래량 고갈: 최근 3일 중 거래량이 20일 최저치에 근접
+        df['vol_min_20'] = df['Volume'].rolling(20).min()
+        df['vcp_dry_vol'] = df['Volume'].rolling(3).min() <= (df['vol_min_20'] * 1.2)
+
+        # --- 매수 로직 베이스 ---
         df['trend_short'] = (df['Close'] > df['EMA_21']) | (df['EMA_21'] > df['EMA_50'])
         df['trend_swing'] = (df['EMA_21'] > df['EMA_50']) & (df['EMA_50'] > df['EMA_200'])
 
@@ -114,7 +129,13 @@ class QuantAnalyzer:
         df['ema21_slope'] = df['EMA_21'] > df['EMA_21'].shift(2)
 
         df['buy_short'] = df['near_ema21'] & df['bullish_candle'] & df['bounce'] & df['rsi_ok'] & df['vol_ok'] & df['trend_short']
-        df['buy_swing'] = df['near_ema21'] & df['bullish_candle'] & df['bounce'] & df['rsi_ok'] & df['vol_ok'] & df['trend_swing'] & df['ema21_slope']
+
+        # [1안] MACD 스윙: 기존 정배열 눌림목 + MACD 모멘텀 상승 반전(히스토그램 증가)
+        df['macd_improving'] = df['MACD_Hist'] > df['MACD_Hist'].shift(1)
+        df['buy_swing_macd'] = df['near_ema21'] & df['bullish_candle'] & df['bounce'] & df['vol_ok'] & df['trend_swing'] & df['macd_improving']
+
+        # [3안] VCP 스윙: 21EMA 부근 + 수렴(전날까지) + 거래량 고갈(전날까지) + 오늘 양봉 반등 돌파
+        df['buy_swing_vcp'] = df['near_ema21'] & df['bullish_candle'] & df['bounce'] & df['trend_swing'] & df['vcp_tight'].shift(1) & df['vcp_dry_vol'].shift(1)
 
         self.micro_data = df
 
@@ -137,17 +158,23 @@ class QuantAnalyzer:
         signals = []
 
         # Pine Script 기반 신호 추가
-        if current['buy_swing']:
-            score += 40
+        if current.get('buy_swing_vcp'):
+            score += 45
+            stop = round(min(current['Low'], current['EMA_21']) * 0.99, 2)
+            target1 = round(current['Close'] + current['ATR_14'] * 3.0, 2)
+            signals.append(f"🟣 [VCP 스윙 포착] 완벽한 거래량 고갈 & 수렴 후 반등(미너비니 스타일)!\n  - 진입가: {round(current['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+            
+        if current.get('buy_swing_macd'):
+            score += 35
             stop = round(min(current['Low'], current['EMA_21']) * 0.99, 2)
             target1 = round(current['Close'] + current['ATR_14'] * 2.0, 2)
-            target2 = round(current['Close'] + current['ATR_14'] * 4.0, 2)
-            signals.append(f"🟢 [스윙 매수 신호 포착] 정배열 하에서 21EMA 반등 성공!\n  - 진입가: {round(current['Close'], 2)}\n  - 1차 목표가: {target1}\n  - 2차 목표가: {target2}\n  - 손절가: {stop}")
-        elif current['buy_short']:
+            signals.append(f"🔵 [MACD 스윙 포착] 정배열 하에서 MACD 모멘텀 상승 반전!\n  - 진입가: {round(current['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+            
+        if current.get('buy_short') and not current.get('buy_swing_vcp') and not current.get('buy_swing_macd'):
             score += 25
             stop = round(min(current['Low'], current['EMA_21']) * 0.99, 2)
             target1 = round(current['Close'] + current['ATR_14'] * 1.5, 2)
-            signals.append(f"🟩 [단기 매수 신호 포착] 21EMA 부근 기술적 반등 성공.\n  - 진입가: {round(current['Close'], 2)}\n  - 1차 목표가: {target1}\n  - 손절가: {stop}")
+            signals.append(f"🟩 [단기 매수 포착] 21EMA 부근 기술적 양봉 반등 성공.\n  - 진입가: {round(current['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
         
         if current['EMA_21'] > current['EMA_50'] and current['EMA_50'] > current['EMA_200']:
             score += 10
@@ -188,7 +215,8 @@ class QuantAnalyzer:
                 "ema_50": row['EMA_50'] if not pd.isna(row['EMA_50']) else None,
                 "ema_200": row['EMA_200'] if not pd.isna(row['EMA_200']) else None,
                 "buy_short": bool(row['buy_short']),
-                "buy_swing": bool(row['buy_swing']),
+                "buy_swing_macd": bool(row.get('buy_swing_macd', False)),
+                "buy_swing_vcp": bool(row.get('buy_swing_vcp', False)),
                 "rsi": row['RSI_14'] if not pd.isna(row['RSI_14']) else None,
                 "atr": row['ATR_14'] if not pd.isna(row['ATR_14']) else None,
             })
