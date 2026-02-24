@@ -5,3 +5,4 @@ numpy>=1.24.0
 finance-datareader>=0.9.94
 pykrx>=1.0.40
 gunicorn>=21.2.0
+setuptools>=68.0.0
