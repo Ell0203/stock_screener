@@ -99,21 +99,26 @@ class QuantAnalyzer:
             
             result = []
             for date, row in df.iterrows():
-                # pykrx의 detail=True 일 때의 컬럼명 (기관합계, 외국인, 개인 + 투신, 연기금 등 상세)
-                # 버전/종목별로 컬럼 존재여부가 다를 수 있으므로 .get() 사용
-                
-                f_net = int(row.get('외국인합계', row.get('외국인', 0)))
-                o_net = int(row.get('기관합계', 0))
-                p_net = int(row.get('개인', 0))
-                
-                # 상세 기관 추출
-                trust_net = int(row.get('투신', 0))
-                pension_net = int(row.get('연기금', 0))
-                pef_net = int(row.get('사모펀드', 0))
-                bank_net = int(row.get('은행', 0))
+                # pykrx의 detail=True 일 때의 컬럼명: 
+                # ['금융투자', '보험', '투신', '사모', '은행', '기타금융', '연기금', '기타법인', '개인', '외국인', '기타외국인', '전체']
+                # 참고: detail=True 이면 '기관합계', '외국인합계' 컬럼은 사라집니다.
+
                 fin_net = int(row.get('금융투자', 0))
                 insur_net = int(row.get('보험', 0))
+                trust_net = int(row.get('투신', 0))
+                pef_net = int(row.get('사모', 0)) # pykrx는 '사모'로 출력
+                bank_net = int(row.get('은행', 0))
                 etc_fin_net = int(row.get('기타금융', 0))
+                pension_net = int(row.get('연기금', 0))
+                
+                # 기관계 합산
+                o_net = fin_net + insur_net + trust_net + pef_net + bank_net + etc_fin_net + pension_net
+                
+                # 외국인 합계 (외국인 + 기타외국인)
+                f_net = int(row.get('외국인', 0)) + int(row.get('기타외국인', 0))
+                
+                # 개인
+                p_net = int(row.get('개인', 0))
                 
                 
                 result.append({
