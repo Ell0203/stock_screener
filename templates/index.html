@@ -55,8 +55,14 @@
             <div style="color: var(--text-secondary); font-size: 0.9rem;">v1.0 (미시적 스윙 뷰어)</div>
         </header>
 
-        <section class="search-section">
-            <input type="text" id="tickerInput" placeholder="종목 코드를 입력하세요 (예: 005930, 035420, TSLA)..."
+        <section class="search-section" style="display: flex; gap: 10px;">
+            <select id="modeSelect"
+                style="padding: 12px; border-radius: 8px; border: 1px solid var(--border-color); background: var(--card-bg); color: var(--text-primary); outline: none;">
+                <option value="swing">🔥 스윙 눌림목 (VCP/MACD)</option>
+                <option value="atr">🚨 ATR 과열/침체 판독대</option>
+                <option value="fibonacci">📐 피보나치 되돌림 분석</option>
+            </select>
+            <input type="text" id="tickerInput" style="flex:1;" placeholder="종목 코드를 입력하세요 (예: 005930, 035420, TSLA)..."
                 autocomplete="off" onkeypress="if(event.key === 'Enter') analyzeStock()">
             <button onclick="analyzeStock()">분석 시작 🚀</button>
         </section>
@@ -114,8 +120,10 @@
         let ema21Series = null;
         let ema50Series = null;
         let ema200Series = null;
+        let sma50Series = null;
         let currentMarkers = [];
         let globalChartData = [];
+        let fibPriceLines = [];
 
         function initChart() {
             const chartContainer = document.getElementById('tvchart');
@@ -170,6 +178,12 @@
                 color: '#94a3b8',
                 lineWidth: 1,
                 title: 'EMA 200',
+            });
+
+            sma50Series = chart.addLineSeries({
+                color: '#3b82f6',
+                lineWidth: 2,
+                title: 'SMA 50',
             });
 
             // 툴팁(마우스 호버) 이벤트 설정
@@ -234,6 +248,7 @@
 
         async function analyzeStock() {
             const ticker = document.getElementById('tickerInput').value.trim();
+            const mode = document.getElementById('modeSelect').value;
             if (!ticker) return alert('티커를 입력해주세요!');
 
             // UI 변경 (로딩)
@@ -244,7 +259,7 @@
                 const response = await fetch('/api/analyze', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ticker: ticker })
+                    body: JSON.stringify({ ticker: ticker, mode: mode })
                 });
 
                 const data = await response.json();
@@ -282,34 +297,79 @@
             const ema21Data = data.chart_data.filter(d => d.ema_21 !== null).map(d => ({ time: d.time, value: d.ema_21 }));
             const ema50Data = data.chart_data.filter(d => d.ema_50 !== null).map(d => ({ time: d.time, value: d.ema_50 }));
             const ema200Data = data.chart_data.filter(d => d.ema_200 !== null).map(d => ({ time: d.time, value: d.ema_200 }));
+            const sma50Data = data.chart_data.filter(d => d.sma_50 !== null).map(d => ({ time: d.time, value: d.sma_50 }));
 
             if (ema21Data.length > 0) ema21Series.setData(ema21Data);
             if (ema50Data.length > 0) ema50Series.setData(ema50Data);
             if (ema200Data.length > 0) ema200Series.setData(ema200Data);
+            if (sma50Data.length > 0) sma50Series.setData(sma50Data);
 
             // 매수 타점 마커(화살표) 생성 로직
             currentMarkers = [];
-            data.chart_data.forEach(d => {
-                if (d.buy_swing_vcp) {
-                    currentMarkers.push({
-                        time: d.time, position: 'belowBar', color: '#b300ff', shape: 'arrowUp', text: 'VCP 스윙', type: 'vcp'
-                    });
-                } else if (d.buy_swing_macd) {
-                    currentMarkers.push({
-                        time: d.time, position: 'belowBar', color: '#00b8ff', shape: 'arrowUp', text: 'MACD 스윙', type: 'macd'
-                    });
-                } else if (d.buy_short) {
-                    currentMarkers.push({
-                        time: d.time, position: 'belowBar', color: '#00ff88', shape: 'arrowUp', text: '단기 진입', type: 'short'
-                    });
-                }
-            });
 
-            // 토글 상태에 맞춰 초기 마커 렌더링
-            toggleIndicators();
+            // 초기화 (모드 변경 시 잔여 선 제거)
+            fibPriceLines.forEach(line => candleSeries.removePriceLine(line));
+            fibPriceLines = [];
+
+            // 모드별 화면 컨트롤
+            const mode = data.analysis.mode;
+            let titleSuffix = '스윙타점 분석';
+
+            if (mode === 'swing') {
+                titleSuffix = '스윙 (MACD/VCP) 분석';
+                sma50Series.applyOptions({ visible: false });
+                data.chart_data.forEach(d => {
+                    if (d.buy_swing_vcp) {
+                        currentMarkers.push({ time: d.time, position: 'belowBar', color: '#b300ff', shape: 'arrowUp', text: 'VCP 스윙', type: 'vcp' });
+                    } else if (d.buy_swing_macd) {
+                        currentMarkers.push({ time: d.time, position: 'belowBar', color: '#00b8ff', shape: 'arrowUp', text: 'MACD 스윙', type: 'macd' });
+                    } else if (d.buy_short) {
+                        currentMarkers.push({ time: d.time, position: 'belowBar', color: '#00ff88', shape: 'arrowUp', text: '단기 진입', type: 'short' });
+                    }
+                });
+            } else if (mode === 'atr') {
+                titleSuffix = 'ATR 과열/침체 판독';
+                ema21Series.applyOptions({ visible: false });
+                ema50Series.applyOptions({ visible: false });
+                ema200Series.applyOptions({ visible: false });
+                sma50Series.applyOptions({ visible: true });
+
+                // ATR 극단값에 점(Dot)을 마커로 찍어주기
+                data.chart_data.forEach(d => {
+                    if (d.ext_atr >= 7) {
+                        currentMarkers.push({ time: d.time, position: 'aboveBar', color: '#ff3366', shape: 'circle', text: `${d.ext_atr.toFixed(1)}x`, type: 'atr' });
+                    } else if (d.ext_atr <= -7) {
+                        currentMarkers.push({ time: d.time, position: 'belowBar', color: '#00ff88', shape: 'circle', text: `${d.ext_atr.toFixed(1)}x`, type: 'atr' });
+                    }
+                });
+            } else if (mode === 'fibonacci') {
+                titleSuffix = '피보나치 되돌림 라인';
+                ema21Series.applyOptions({ visible: false });
+                ema50Series.applyOptions({ visible: false });
+                ema200Series.applyOptions({ visible: false });
+                sma50Series.applyOptions({ visible: false });
+
+                const fib = data.analysis.fibonacci;
+                if (fib) {
+                    const addLine = (price, color, title) => {
+                        fibPriceLines.push(candleSeries.createPriceLine({
+                            price: price, color: color, lineWidth: 2, lineStyle: LightweightCharts.LineStyle.Dashed, axisLabelVisible: true, title: title
+                        }));
+                    };
+                    addLine(fib.high, '#ff3366', '고점 (0)');
+                    addLine(fib.fib_236, '#ffaa00', '0.236');
+                    addLine(fib.fib_382, '#eab308', '0.382');
+                    addLine(fib.fib_500, '#a855f7', '0.500');
+                    addLine(fib.fib_618, '#00b8ff', '0.618 방어선');
+                    addLine(fib.low, '#00ff88', '저점 (1)');
+                }
+            }
+
+            // 토글 상태에 맞춰 초기 마커 렌더링 (체크박스 필터링은 swing 모드일때 주로 유효)
+            toggleIndicators(mode);
 
             // Analysis 결과 텍스트 렌더링
-            document.getElementById('chartTitle').innerText = `${data.analysis.ticker} 일봉 스윙타점 분석`;
+            document.getElementById('chartTitle').innerText = `${data.analysis.ticker} 일봉 ${titleSuffix}`;
 
             // 점수에 따른 생상 변경 로직
             const scoreEl = document.getElementById('scoreValue');
@@ -328,18 +388,21 @@
             chart.timeScale().fitContent();
         }
 
-        function toggleIndicators() {
+        function toggleIndicators(currentMode = 'swing') {
             if (!chart) return;
             const showEma = document.getElementById('toggleEma').checked;
             const showShort = document.getElementById('toggleShort').checked;
             const showMacd = document.getElementById('toggleMacd').checked;
             const showVcp = document.getElementById('toggleVcp').checked;
 
-            ema21Series.applyOptions({ visible: showEma });
-            ema50Series.applyOptions({ visible: showEma });
-            ema200Series.applyOptions({ visible: showEma });
+            if (currentMode === 'swing') {
+                ema21Series.applyOptions({ visible: showEma });
+                ema50Series.applyOptions({ visible: showEma });
+                ema200Series.applyOptions({ visible: showEma });
+            }
 
             const visibleMarkers = currentMarkers.filter(m => {
+                if (currentMode !== 'swing') return true; // 다른 모드에서는 마커 필터링 안함
                 if (m.type === 'short') return showShort;
                 if (m.type === 'macd') return showMacd;
                 if (m.type === 'vcp') return showVcp;

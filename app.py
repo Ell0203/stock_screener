@@ -11,11 +11,12 @@ def index():
 def analyze_stock():
     data = request.json
     ticker = data.get('ticker')
+    mode = data.get('mode', 'swing')
     if not ticker:
         return jsonify({"error": "종목 코드를 입력해 주세요."}), 400
 
     try:
-        qa = QuantAnalyzer(ticker)
+        qa = QuantAnalyzer(ticker, mode=mode)
         qa._fetch_micro_data()
         
         # 분석을 실행합니다.

@@ -30,10 +30,11 @@ def resolve_ticker(query):
     return query
 
 class QuantAnalyzer:
-    def __init__(self, ticker):
+    def __init__(self, ticker, mode='swing'):
         self.original_name = ticker.upper() if ticker.isascii() else ticker
         resolved = resolve_ticker(ticker)
         self.ticker = resolved.upper()
+        self.mode = mode
         self.micro_data = pd.DataFrame()
         self.macro_data = pd.DataFrame()
         self.analysis_result = {}
@@ -81,10 +82,11 @@ class QuantAnalyzer:
 
         df = self.micro_data.copy()
         
-        # 1. 이동평균선 상수 (Pine Script 설정 EMA)
+        # 1. 이동평균선 상수 (Pine Script 설정 EMA 및 SMA50)
         df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
         df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
         df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
+        df['SMA_50'] = df['Close'].rolling(window=50).mean()
 
         # 2. RSI 계산 (14일)
         delta = df['Close'].diff()
@@ -117,6 +119,9 @@ class QuantAnalyzer:
         df['vol_min_20'] = df['Volume'].rolling(20).min()
         df['vcp_dry_vol'] = df['Volume'].rolling(3).min() <= (df['vol_min_20'] * 1.2)
 
+        # --- ATR Matrix 스펙 (extAtr) 계산 ---
+        df['extAtr'] = (df['Close'] - df['SMA_50']) / df['ATR_14'].replace(0, np.nan)
+
         # --- 매수 로직 베이스 ---
         df['trend_short'] = (df['Close'] > df['EMA_21']) | (df['EMA_21'] > df['EMA_50'])
         df['trend_swing'] = (df['EMA_21'] > df['EMA_50']) & (df['EMA_50'] > df['EMA_200'])
@@ -136,6 +141,11 @@ class QuantAnalyzer:
 
         # [3안] VCP 스윙: 21EMA 부근 + 수렴(전날까지) + 거래량 고갈(전날까지) + 오늘 양봉 반등 돌파
         df['buy_swing_vcp'] = df['near_ema21'] & df['bullish_candle'] & df['bounce'] & df['trend_swing'] & df['vcp_tight'].shift(1) & df['vcp_dry_vol'].shift(1)
+
+        if self.mode == 'fibonacci':
+            latest_subset = df.tail(150)
+            self.fib_high = latest_subset['High'].max()
+            self.fib_low = latest_subset['Low'].min()
 
         self.micro_data = df
 
@@ -157,49 +167,110 @@ class QuantAnalyzer:
         score = 50 
         signals = []
 
-        # 가장 최근에 발생한 타점을 찾기 위해 데이터를 역순으로 탐색
-        recent_signal_found = False
-        for i in range(len(self.micro_data)-1, -1, -1):
-            row = self.micro_data.iloc[i]
-            days_ago = len(self.micro_data) - 1 - i
+        if self.mode == 'swing':
+            # 가장 최근에 발생한 스윙 타점을 찾기 위해 데이터를 역순으로 탐색
+            recent_signal_found = False
+            for i in range(len(self.micro_data)-1, -1, -1):
+                row = self.micro_data.iloc[i]
+                days_ago = len(self.micro_data) - 1 - i
+                
+                if days_ago > 30: # 30일 이내의 타점만 브리핑에 표시
+                    break
+                    
+                day_text = "오늘" if days_ago == 0 else f"{days_ago}일 전"
+                
+                if row.get('buy_swing_vcp') and not recent_signal_found:
+                    score += 45
+                    stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
+                    target1 = round(row['Close'] + row['ATR_14'] * 3.0, 2)
+                    signals.append(f"🟣 [VCP 스윙 포착 - {day_text}] 왜 이 타점을 잡았나요? -> 최근 5일간 위아래 변동폭이 잔잔하게 수렴함과 동시에 거래량이 완벽히 고갈되었으며, 오늘 21일선 부근에서 강력한 양봉으로 에너지를 터뜨렸기 때문입니다!\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+                    recent_signal_found = True
+                    
+                elif row.get('buy_swing_macd') and not recent_signal_found:
+                    score += 35
+                    stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
+                    target1 = round(row['Close'] + row['ATR_14'] * 2.0, 2)
+                    signals.append(f"🔵 [MACD 스윙 포착 - {day_text}] 왜 이 타점을 잡았나요? -> 200일선 위의 안정적인 정배열 구간에서 21일선까지 주가가 예쁘게 눌렸고, 그 직후 MACD(모멘턴)가 마이너스에서 다시 상승 반전(히스토그램 전환)했기 때문에 진짜 바닥을 다지는 신뢰도 높은 타점입니다!\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+                    recent_signal_found = True
+                    
+                elif row.get('buy_short') and not row.get('buy_swing_vcp') and not row.get('buy_swing_macd') and not recent_signal_found:
+                    score += 25
+                    stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
+                    target1 = round(row['Close'] + row['ATR_14'] * 1.5, 2)
+                    signals.append(f"🟩 [단기 매수 포착 - {day_text}] 21EMA 부근에 맞고 튀어오르는 단순한 기술적 단기 양봉 반등 타점입니다. (짧게 먹고 빠지는 용도)\n  - 최소 목표가: {target1}\n  - 손절가: {stop}")
+                    recent_signal_found = True
+
+            if not recent_signal_found:
+                signals.append("💬 최근 30일 내에 포착된 뚜렷한 매수 타점(화살표)이 차트에 없습니다.")
+                
+            # ATR Matrix 시너지 코멘트
+            extAtr = current['extAtr']
+            if extAtr >= 7.0:
+                score -= 30
+                signals.append(f"🔥 [ATR Matrix 긴급 경고] 아무리 화살표 타점이 떴어도 굉장히 조심해야 합니다! 주가가 50일선 대비 {extAtr:.1f} ATR 배수만큼 미치게 치솟아 있는 최상단 과열 구간입니다. 언제 패닉락이 떨어져도 이상하지 않습니다.")
+            elif extAtr <= -7.0:
+                score += 15
+                signals.append(f"💡 [ATR Matrix 낙주 기회] 현재 주가가 50일선 기준 {abs(extAtr):.1f} ATR 만큼 바닥으로 곤두박질쳤습니다. 여기서 단기 반등 조건이 충족되면 엄청난 승률의 V자 랠리가 일어날 수 있습니다.")
+
+            # 정배열 검사
+            if current['EMA_21'] > current['EMA_50'] and current['EMA_50'] > current['EMA_200']:
+                score += 10
+                signals.append("✔ 현재 가장 든든한 조건인 '21일-50일-200일 이평선의 완벽한 우상향 정배열' 상태입니다.")
+                
+        elif self.mode == 'atr':
+            score = 50
+            signals.append("🔎 [ATR 과열/침체 판독 센터] 현재 모드는 스프링의 탄성을 측정합니다. 50일 생명선(파란색)에서 주가가 너무 벗어나서 튕겨져 나갈 위기인지 측정합니다.")
             
-            if days_ago > 30: # 30일 이내의 타점만 브리핑에 표시
-                break
+            extAtr = current['extAtr']
+            if pd.isna(extAtr):
+                signals.append("데이터가 부족하여 ATR 계산을 할 수 없습니다.")
+            else:
+                signals.append(f"📏 현재 이 주식은 50일 이동평균선(SMA50)을 기준으로 위/아래 방향으로 【 {extAtr:.2f} ATR 】 만큼 멀어져 있는 상태로 계산되었습니다.")
                 
-            day_text = "오늘" if days_ago == 0 else f"{days_ago}일 전"
+                if extAtr >= 7:
+                    score = 0
+                    signals.append("🚨 [절대 매수 금지 단계] 7 ATR을 돌파하며 과열 피날레를 찍고 있습니다! 작전주이거나 쏠림 현상의 끝자락이니, 가진 자의 영역이며 익절 후 도망쳐야 합니다.")
+                elif extAtr <= -7:
+                    score = 90
+                    signals.append("🌈 [인생 반등 타점 단계] -7 ATR 아래로 떨어졌습니다! 모두가 주식을 버리고 도망가는 투매장입니다. 평균선(50일)으로 강력하게 다시 달라붙는 기술적 로켓 반등을 먹을 준비를 해야 합니다.")
+                elif extAtr > 3:
+                    score = 30
+                    signals.append("⚠️ 진입 주의 단계입니다. 주가의 거품이 단기적으로 살짝 낀 상태로 보이니, 스윙 타점을 원한다면 다시 이평선 부근으로 눌릴 때(0 근처)를 기다리세요.")
+                elif extAtr < -3:
+                    score = 70
+                    signals.append("👍 과매도 구간(침체기)으로 진입 중입니다. 저평가되어 있으니 분할로 지지 여부를 체크하며 매수를 계획해볼 수 있는 구간입니다.")
+                else:
+                    score = 50
+                    signals.append("📊 정상 궤도행. 현재 50일 이평선에 찰싹 달라붙어 건강하고 안정적인 궤도를 순항하고 있습니다.")
+
+        elif self.mode == 'fibonacci':
+            diff = self.fib_high - self.fib_low
+            fib_0 = self.fib_high
+            fib_236 = self.fib_high - diff * 0.236
+            fib_382 = self.fib_high - diff * 0.382
+            fib_500 = self.fib_high - diff * 0.500
+            fib_618 = self.fib_high - diff * 0.618
+            fib_1 = self.fib_low
             
-            if row.get('buy_swing_vcp') and not recent_signal_found:
-                score += 45
-                stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
-                target1 = round(row['Close'] + row['ATR_14'] * 3.0, 2)
-                signals.append(f"🟣 [VCP 스윙 포착 - {day_text}] 완벽한 거래량 고갈 & 수렴 후 반등!\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
-                recent_signal_found = True
-                
-            elif row.get('buy_swing_macd') and not recent_signal_found:
-                score += 35
-                stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
-                target1 = round(row['Close'] + row['ATR_14'] * 2.0, 2)
-                signals.append(f"🔵 [MACD 스윙 포착 - {day_text}] 정배열 하에서 MACD 모멘텀 상승 반전!\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
-                recent_signal_found = True
-                
-            elif row.get('buy_short') and not row.get('buy_swing_vcp') and not row.get('buy_swing_macd') and not recent_signal_found:
-                score += 25
-                stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
-                target1 = round(row['Close'] + row['ATR_14'] * 1.5, 2)
-                signals.append(f"🟩 [단기 매수 포착 - {day_text}] 21EMA 부근 기술적 양봉 반등 성공.\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
-                recent_signal_found = True
-
-        if not recent_signal_found:
-            signals.append("💬 최근 30일 내에 포착된 뚜렷한 매수 타점이 없습니다.")
-
-        if current['EMA_21'] > current['EMA_50'] and current['EMA_50'] > current['EMA_200']:
-            score += 10
-            signals.append("✔ 현재 21일/50일/200일 이동평균선 완벽한 정배열 상승 추세입니다.")
-
-        # RSI 과열 검사
-        if current['RSI_14'] > 70:
-            score -= 20
-            signals.append("⚠️ RSI 70 초과 과매수 상태. 차익 실현 후 조정(풀백)을 기다리시길 권장합니다.")
+            score = 50
+            signals.append(f"📐 [피보나치 되돌림 분석] 주식의 오르내림 파동에는 자연의 황금비율이 있습니다. 최근 150일간 최고점({round(self.fib_high,2)}) 대비 어디까지 '되돌림(눌림 조정)'을 겪고 있는지 계산합니다.")
+            
+            c = current['Close']
+            if c >= fib_236:
+                score = 80
+                signals.append("🚀 현재 [0.236(23.6%)] 구간 위에서 아주 강하게 버티고 있습니다. 이건 살짝만 숨을 돌리고 이내 전고점을 한 번 더 돌파해버리려는 극강의 상승 의지입니다.")
+            elif c >= fib_382:
+                score = 70
+                signals.append("📈 [0.382(38.2%)] 구간 근처의 지지를 테스트 중입니다. 가장 이상적이고 건강한 조정 템포를 가진 아주 평범한 스윙 타점 라인입니다.")
+            elif c >= fib_500:
+                score = 50
+                signals.append("⏸️ 고점과 저점의 딱 절반인 [0.500(50%)] 구간입니다. 이 자리를 방어해내느냐 아니냐가 이번 추세가 끝난 건지 더 가려는 건지 판단하는 중대한 갈림길입니다.")
+            elif c >= fib_618:
+                score = 30
+                signals.append("👀 마지막 마지노선 [0.618(61.8%)] 황금비율 라인에 턱걸이했습니다. 이 선이 깨지고 더 떨어진다면 그것은 '단순 조정'이 아니라 '대세 하락 파동의 시작'으로 인정해야 하니 칼손절을 준비해야 합니다.")
+            else:
+                score = 10
+                signals.append("📉 0.618 방어선마저 완벽히 깨지고 추락했습니다. 상승의 수명이 다했으며 장기 시체산 구간이 기약 없이 펼쳐질 수 있습니다.")
 
         # 거시적 패턴 뼈대 ---------------------------------
         # 향후 200일선, 월봉 지지선 추세 분석 결과를 위 score와 signals에 융합할 구역입니다.
@@ -211,8 +282,19 @@ class QuantAnalyzer:
             "last_price": round(current['Close'], 2),
             "score": min(100, max(0, score)), # 0~100 사이
             "signals": signals,
-            "macro_status": macro_signal
+            "macro_status": macro_signal,
+            "mode": self.mode
         }
+        
+        if self.mode == 'fibonacci':
+            self.analysis_result["fibonacci"] = {
+                "high": self.fib_high,
+                "fib_236": self.fib_high - (self.fib_high - self.fib_low) * 0.236,
+                "fib_382": self.fib_high - (self.fib_high - self.fib_low) * 0.382,
+                "fib_500": self.fib_high - (self.fib_high - self.fib_low) * 0.500,
+                "fib_618": self.fib_high - (self.fib_high - self.fib_low) * 0.618,
+                "low": self.fib_low,
+            }
         
         return self.analysis_result
         
@@ -230,6 +312,8 @@ class QuantAnalyzer:
                 "ema_21": row['EMA_21'] if not pd.isna(row['EMA_21']) else None,
                 "ema_50": row['EMA_50'] if not pd.isna(row['EMA_50']) else None,
                 "ema_200": row['EMA_200'] if not pd.isna(row['EMA_200']) else None,
+                "sma_50": row['SMA_50'] if not pd.isna(row['SMA_50']) else None,
+                "ext_atr": row['extAtr'] if not pd.isna(row['extAtr']) else None,
                 "buy_short": bool(row['buy_short']),
                 "buy_swing_macd": bool(row.get('buy_swing_macd', False)),
                 "buy_swing_vcp": bool(row.get('buy_swing_vcp', False)),
