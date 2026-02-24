@@ -11,6 +11,41 @@
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
     <!-- Lightweight Charts (TradingView) -->
     <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        .chart-container {
+            position: relative;
+        }
+
+        .chart-tooltip {
+            width: 160px;
+            position: absolute;
+            display: none;
+            padding: 10px;
+            box-sizing: border-box;
+            font-size: 13px;
+            text-align: left;
+            z-index: 1000;
+            top: 12px;
+            left: 12px;
+            pointer-events: none;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: rgba(21, 26, 37, 0.9);
+            backdrop-filter: blur(4px);
+            color: var(--text-primary);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5);
+        }
+
+        .chart-tooltip div {
+            margin: 3px 0;
+        }
+
+        .chart-tooltip .title {
+            font-weight: 600;
+            font-size: 14px;
+            margin-bottom: 6px;
+        }
+    </style>
 </head>
 
 <body>
@@ -46,7 +81,9 @@
                                 onchange="toggleIndicators()"> 🟣 VCP</label>
                     </div>
                 </h2>
-                <div id="tvchart" class="chart-container"></div>
+                <div id="tvchart" class="chart-container">
+                    <div id="chartTooltip" class="chart-tooltip"></div>
+                </div>
             </div>
 
             <!-- Right col: Analysis -->
@@ -78,6 +115,7 @@
         let ema50Series = null;
         let ema200Series = null;
         let currentMarkers = [];
+        let globalChartData = [];
 
         function initChart() {
             const chartContainer = document.getElementById('tvchart');
@@ -133,6 +171,65 @@
                 lineWidth: 1,
                 title: 'EMA 200',
             });
+
+            // 툴팁(마우스 호버) 이벤트 설정
+            const toolTip = document.getElementById('chartTooltip');
+            chart.subscribeCrosshairMove(param => {
+                if (
+                    param.point === undefined ||
+                    !param.time ||
+                    param.point.x < 0 ||
+                    param.point.x > chartContainer.clientWidth ||
+                    param.point.y < 0 ||
+                    param.point.y > chartContainer.clientHeight
+                ) {
+                    toolTip.style.display = 'none';
+                    return;
+                }
+
+                // 현재 마우스가 가리키는 날짜(time)의 데이터 찾기
+                const hoveredData = globalChartData.find(d => d.time === param.time);
+                if (hoveredData && (hoveredData.buy_swing_vcp || hoveredData.buy_swing_macd || hoveredData.buy_short)) {
+                    let title = '';
+                    let titleColor = '';
+                    let targetPrice = 0;
+
+                    if (hoveredData.buy_swing_vcp) {
+                        title = '🟣 VCP 스윙 타점';
+                        titleColor = '#b300ff';
+                        targetPrice = hoveredData.close + (hoveredData.atr * 3.0);
+                    } else if (hoveredData.buy_swing_macd) {
+                        title = '🔵 MACD 스윙 타점';
+                        titleColor = '#00b8ff';
+                        targetPrice = hoveredData.close + (hoveredData.atr * 2.0);
+                    } else {
+                        title = '🟩 단기 반등 타점';
+                        titleColor = '#00ff88';
+                        targetPrice = hoveredData.close + (hoveredData.atr * 1.5);
+                    }
+
+                    toolTip.innerHTML = `
+                        <div class="title" style="color: ${titleColor};">${title}</div>
+                        <div>진입: <b>${hoveredData.close.toFixed(2)}</b></div>
+                        <div>목표: <b>${targetPrice.toFixed(2)}</b></div>
+                        <div style="color: #ff3366;">손절: <b>${hoveredData.stop_price ? hoveredData.stop_price.toFixed(2) : '-'}</b></div>
+                    `;
+
+                    toolTip.style.display = 'block';
+
+                    // 툴팁 위치 조정 (화면 밖으로 나가지 않도록)
+                    const x = param.point.x;
+                    const y = param.point.y;
+                    let left = x + 15;
+                    if (left > chartContainer.clientWidth - 160) {
+                        left = x - 175;
+                    }
+                    toolTip.style.left = left + 'px';
+                    toolTip.style.top = Math.max(10, y - 50) + 'px';
+                } else {
+                    toolTip.style.display = 'none';
+                }
+            });
         }
 
         async function analyzeStock() {
@@ -172,6 +269,9 @@
 
             // 차트 렌더링
             initChart();
+
+            // 호버용 글로벌 데이터 저장
+            globalChartData = data.chart_data;
 
             const mainData = data.chart_data.map(d => ({
                 time: d.time, open: d.open, high: d.high, low: d.low, close: d.close

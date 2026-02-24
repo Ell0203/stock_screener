@@ -157,28 +157,44 @@ class QuantAnalyzer:
         score = 50 
         signals = []
 
-        # Pine Script 기반 신호 추가
-        if current.get('buy_swing_vcp'):
-            score += 45
-            stop = round(min(current['Low'], current['EMA_21']) * 0.99, 2)
-            target1 = round(current['Close'] + current['ATR_14'] * 3.0, 2)
-            signals.append(f"🟣 [VCP 스윙 포착] 완벽한 거래량 고갈 & 수렴 후 반등(미너비니 스타일)!\n  - 진입가: {round(current['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+        # 가장 최근에 발생한 타점을 찾기 위해 데이터를 역순으로 탐색
+        recent_signal_found = False
+        for i in range(len(self.micro_data)-1, -1, -1):
+            row = self.micro_data.iloc[i]
+            days_ago = len(self.micro_data) - 1 - i
             
-        if current.get('buy_swing_macd'):
-            score += 35
-            stop = round(min(current['Low'], current['EMA_21']) * 0.99, 2)
-            target1 = round(current['Close'] + current['ATR_14'] * 2.0, 2)
-            signals.append(f"🔵 [MACD 스윙 포착] 정배열 하에서 MACD 모멘텀 상승 반전!\n  - 진입가: {round(current['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+            if days_ago > 30: # 30일 이내의 타점만 브리핑에 표시
+                break
+                
+            day_text = "오늘" if days_ago == 0 else f"{days_ago}일 전"
             
-        if current.get('buy_short') and not current.get('buy_swing_vcp') and not current.get('buy_swing_macd'):
-            score += 25
-            stop = round(min(current['Low'], current['EMA_21']) * 0.99, 2)
-            target1 = round(current['Close'] + current['ATR_14'] * 1.5, 2)
-            signals.append(f"🟩 [단기 매수 포착] 21EMA 부근 기술적 양봉 반등 성공.\n  - 진입가: {round(current['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
-        
+            if row.get('buy_swing_vcp') and not recent_signal_found:
+                score += 45
+                stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
+                target1 = round(row['Close'] + row['ATR_14'] * 3.0, 2)
+                signals.append(f"🟣 [VCP 스윙 포착 - {day_text}] 완벽한 거래량 고갈 & 수렴 후 반등!\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+                recent_signal_found = True
+                
+            elif row.get('buy_swing_macd') and not recent_signal_found:
+                score += 35
+                stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
+                target1 = round(row['Close'] + row['ATR_14'] * 2.0, 2)
+                signals.append(f"🔵 [MACD 스윙 포착 - {day_text}] 정배열 하에서 MACD 모멘텀 상승 반전!\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+                recent_signal_found = True
+                
+            elif row.get('buy_short') and not row.get('buy_swing_vcp') and not row.get('buy_swing_macd') and not recent_signal_found:
+                score += 25
+                stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
+                target1 = round(row['Close'] + row['ATR_14'] * 1.5, 2)
+                signals.append(f"🟩 [단기 매수 포착 - {day_text}] 21EMA 부근 기술적 양봉 반등 성공.\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+                recent_signal_found = True
+
+        if not recent_signal_found:
+            signals.append("💬 최근 30일 내에 포착된 뚜렷한 매수 타점이 없습니다.")
+
         if current['EMA_21'] > current['EMA_50'] and current['EMA_50'] > current['EMA_200']:
             score += 10
-            signals.append("✔ 21일/50일/200일 이동평균선 완벽한 정배열 상승 추세입니다.")
+            signals.append("✔ 현재 21일/50일/200일 이동평균선 완벽한 정배열 상승 추세입니다.")
 
         # RSI 과열 검사
         if current['RSI_14'] > 70:
@@ -219,5 +235,6 @@ class QuantAnalyzer:
                 "buy_swing_vcp": bool(row.get('buy_swing_vcp', False)),
                 "rsi": row['RSI_14'] if not pd.isna(row['RSI_14']) else None,
                 "atr": row['ATR_14'] if not pd.isna(row['ATR_14']) else None,
+                "stop_price": round(min(row['Low'], row['EMA_21']) * 0.99, 2) if not pd.isna(row['EMA_21']) else None,
             })
         return chart_data
