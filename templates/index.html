@@ -544,7 +544,7 @@
                     return `<span style="color:#aaa">${eok}억</span>`;
                 };
 
-                const reversedSupply = [...supplyData].reverse();
+                const reversedSupply = [...supplyData].reverse();  // 오래된 날짜가 앞에 오므로 뒤집기
                 const rows = reversedSupply.map(row => `
                     <tr>
                         <td>${row.date.slice(5)}</td>
