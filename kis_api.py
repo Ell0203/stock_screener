@@ -96,7 +96,7 @@ def get_investor_trend(stock_code, days=5):
             return []
 
         result = []
-        for row in data.get("output", [])[-days:]:
+        for row in data.get("output", [])[:days]:  # KIS: 최신순 정렬, 앞 N개가 최근
             result.append({
                 "date":             _fmt_date(row.get("stck_bsop_date", "")),
                 "foreign_net":      _safe_int(row.get("frgn_ntby_qty", 0)),
@@ -117,17 +117,17 @@ def get_investor_trend(stock_code, days=5):
 
 
 # ============================================================
-# 3. 공매도 잔고
+# 3. 공매도 일별추이
 # ============================================================
-def get_short_sale_balance(stock_code):
+def get_short_sale_balance(stock_code, days=5):
     """
-    TR: FHPST04830000
+    국내주식 공매도 일별추이 (국내주식-134)
+    TR:  FHPST04830000
     URL: /uapi/domestic-stock/v1/quotations/daily-short-sale
-    ※ 404 발생 시 조용히 빈 dict 반환 (기능 자체를 막지 않음)
+    Returns: { "today": {...}, "trend": [...] }
     """
     try:
         token = get_access_token()
-
         end   = datetime.datetime.today()
         start = end - datetime.timedelta(days=days * 5 + 10)
 
@@ -146,23 +146,30 @@ def get_short_sale_balance(stock_code):
         data = res.json()
 
         if data.get("rt_cd") != "0":
-            print(f"[KIS] 공매도 잔고 오류: {data.get('msg1')}")
+            print(f"[KIS] 공매도 일별추이 오류: {data.get('msg1')}")
             return {}
 
-        output   = data.get("output", {})
-        bal_qty  = _safe_int(output.get("ssts_resdl_qty",      0))
-        prev_qty = _safe_int(output.get("bfdy_ssts_resdl_qty", 0))
+        rows = data.get("output2", [])
+        if not rows:
+            return {}
 
-        return {
-            "balance_qty":      bal_qty,
-            "balance_ratio":    _safe_float(output.get("ssts_resdl_rate", 0)),
-            "balance_value":    _safe_int(output.get("ssts_resdl_amt",    0)),
-            "prev_balance_qty": prev_qty,
-            "change_qty":       bal_qty - prev_qty,
-        }
+        trend = []
+        for row in rows[:days]:  # KIS: 최신순 정렬, 앞 N개가 최근
+            trend.append({
+                "date":              _fmt_date(row.get("stck_bsop_date", "")),
+                "ssts_cntg_qty":     _safe_int(row.get("ssts_cntg_qty",     0)),
+                "ssts_vol_rlim":     _safe_float(row.get("ssts_vol_rlim",   0)),
+                "ssts_tr_pbmn":      _safe_int(row.get("ssts_tr_pbmn",      0)),
+                "ssts_tr_pbmn_rlim": _safe_float(row.get("ssts_tr_pbmn_rlim", 0)),
+                "acml_vol":          _safe_int(row.get("acml_vol",          0)),
+                "stck_clpr":         _safe_int(row.get("stck_clpr",         0)),
+            })
+
+        today = trend[-1] if trend else {}
+        return {"today": today, "trend": trend}
 
     except Exception as e:
-        print(f"[KIS] 공매도 잔고 수집 실패: {e}")
+        print(f"[KIS] 공매도 일별추이 수집 실패: {e}")
         return {}
 
 
