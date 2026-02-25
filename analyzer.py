@@ -54,7 +54,9 @@ class QuantAnalyzer:
         def _download(ticker_str, retries=3):
             for attempt in range(retries):
                 try:
-                    data = yf.download(ticker_str, period="2y", interval="1d", progress=False)
+                    end = datetime.date.today() + datetime.timedelta(days=1)
+                    start = end - datetime.timedelta(days=730)
+                    data = yf.download(ticker_str, start=start, end=end, interval="1d", progress=False)
                     return data
                 except Exception as e:
                     if attempt < retries - 1:
