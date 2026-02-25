@@ -96,7 +96,7 @@ def get_investor_trend(stock_code, days=5):
             return []
 
         result = []
-        for row in data.get("output", [])[-days:]:
+        for row in data.get("output", [])[:days]:  # KIS 최신순, 앞 N개가 최근
             result.append({
                 "date":             _fmt_date(row.get("stck_bsop_date", "")),
                 "foreign_net":      _safe_int(row.get("frgn_ntby_qty", 0)),
@@ -154,7 +154,7 @@ def get_short_sale_balance(stock_code, days=5):
             return {}
 
         trend = []
-        for row in rows[-days:]:
+        for row in rows[:days]:  # KIS 최신순, 앞 N개가 최근
             trend.append({
                 "date":              _fmt_date(row.get("stck_bsop_date", "")),
                 "ssts_cntg_qty":     _safe_int(row.get("ssts_cntg_qty",     0)),
@@ -165,7 +165,7 @@ def get_short_sale_balance(stock_code, days=5):
                 "stck_clpr":         _safe_int(row.get("stck_clpr",         0)),
             })
 
-        today = trend[-1] if trend else {}
+        today = trend[0] if trend else {}  # KIS 최신순: 0번이 오늘
         return {"today": today, "trend": trend}
 
     except Exception as e:
@@ -205,7 +205,7 @@ def get_daily_trade_value(stock_code, days=20):
 
         result = {}
         rows   = data.get("output2", [])
-        for row in rows[-days:]:
+        for row in rows[:days]:  # KIS 최신순, 앞 N개가 최근
             date  = row.get("stck_bsop_date", "")
             value = _safe_int(row.get("acml_tr_pbmn", 0))
             if date:

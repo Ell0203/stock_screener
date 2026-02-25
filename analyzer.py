@@ -104,8 +104,8 @@ class QuantAnalyzer:
         # ── 투자자별 매매동향 ────────────────────────────────────────
         trend = self.supply_data.get("investor_trend", [])
         if trend:
-            recent = trend[-3:]
-            today  = trend[-1]
+            recent = trend[:3]   # KIS 최신순: 앞 3개가 최근
+            today  = trend[0]   # KIS 최신순: 0번이 오늘
 
             foreign_consecutive = len(recent) == 3 and all(d['foreign_net'] > 0 for d in recent)
             institution_today   = today['institution_net'] > 0
