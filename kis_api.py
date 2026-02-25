@@ -96,7 +96,7 @@ def get_investor_trend(stock_code, days=5):
             return []
 
         result = []
-        for row in data.get("output", [])[:days]:  # KIS: 최신순 정렬, 앞 N개가 최근
+        for row in data.get("output", [])[-days:]:
             result.append({
                 "date":             _fmt_date(row.get("stck_bsop_date", "")),
                 "foreign_net":      _safe_int(row.get("frgn_ntby_qty", 0)),
@@ -154,7 +154,7 @@ def get_short_sale_balance(stock_code, days=5):
             return {}
 
         trend = []
-        for row in rows[:days]:  # KIS: 최신순 정렬, 앞 N개가 최근
+        for row in rows[-days:]:
             trend.append({
                 "date":              _fmt_date(row.get("stck_bsop_date", "")),
                 "ssts_cntg_qty":     _safe_int(row.get("ssts_cntg_qty",     0)),
