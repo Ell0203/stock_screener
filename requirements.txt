@@ -3,6 +3,5 @@ yfinance>=0.2.40
 pandas>=2.0.0
 numpy>=1.24.0
 finance-datareader>=0.9.94
-pykrx>=1.2.4
 gunicorn>=21.2.0
-setuptools>=68.0.0
+requests>=2.31.0

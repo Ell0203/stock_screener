@@ -3,7 +3,12 @@ import pandas as pd
 import numpy as np
 import FinanceDataReader as fdr
 import datetime
-from pykrx import stock
+
+try:
+    from kis_api import fetch_supply_data
+    KIS_AVAILABLE = True
+except ImportError:
+    KIS_AVAILABLE = False
 
 _krx_df = None
 
@@ -11,7 +16,6 @@ def resolve_ticker(query):
     query = query.strip()
     if query.isdigit() and len(query) == 6:
         return query
-    # 순수 알파벳인 경우 (미국 주식 티커로 간주)
     if query.isascii() and query.isalpha():
         return query
         
@@ -19,43 +23,38 @@ def resolve_ticker(query):
     if _krx_df is None:
         _krx_df = fdr.StockListing('KRX')
         
-    # 1. 완전 일치
     match = _krx_df[_krx_df['Name'] == query]
     if not match.empty:
         return match.iloc[0]['Code']
         
-    # 2. 부분 일치
     match = _krx_df[_krx_df['Name'].str.contains(query, na=False, case=False)]
     if not match.empty:
         return match.iloc[0]['Code']
         
     return query
 
+
 class QuantAnalyzer:
     def __init__(self, ticker, mode='swing'):
         self.original_name = ticker.upper() if ticker.isascii() else ticker
-        resolved = resolve_ticker(ticker)
-        self.ticker = resolved.upper()
-        self.mode = mode
-        self.micro_data = pd.DataFrame()
-        self.macro_data = pd.DataFrame()
-        self.supply_data = []
+        resolved           = resolve_ticker(ticker)
+        self.ticker        = resolved.upper()
+        self.mode          = mode
+        self.micro_data    = pd.DataFrame()
+        self.macro_data    = pd.DataFrame()
+        self.supply_data   = {}
         self.analysis_result = {}
 
+    # ────────────────────────────────────────────────
+    # 데이터 수집
+    # ────────────────────────────────────────────────
     def fetch_data(self):
-        """
-        데이터 수집 로직. 
-        향후 거시적(Macro) 데이터 수집 로직(예: 3~5년치)을 여기에 추가할 수 있도록 구조를 분리해둡니다.
-        """
         self._fetch_micro_data()
         self._fetch_macro_data()
         self._fetch_supply_data(days=5)
-        
+
     def _fetch_micro_data(self):
-        # 스윙/단기 분석용 최소 1~2년치 일봉 데이터 (200EMA 계산을 위함)
         print(f"[{self.ticker}] 미시적 데이터 수집 시작 (2y)...")
-        
-        # 한국 주식 코드(6자리 숫자) 처리 로직
         if self.ticker.isdigit() and len(self.ticker) == 6:
             data = yf.download(f"{self.ticker}.KS", period="2y", interval="1d", progress=False)
             if data.empty:
@@ -65,399 +64,451 @@ class QuantAnalyzer:
                 self.ticker = f"{self.ticker}.KS"
         else:
             data = yf.download(self.ticker, period="2y", interval="1d", progress=False)
-        
-        # 다중 인덱스가 반환될 경우 최상위 열만 사용
+
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.droplevel(1)
-            
         self.micro_data = data
 
     def _fetch_macro_data(self):
-        # 거시적(장기) 분석용 데이터 수집 뼈대 (향후 구현 예정)
-        # 예: self.macro_data = yf.download(self.ticker, period="3y", interval="1wk")
         pass
 
     def _fetch_supply_data(self, days=5):
-        """최근 N일 외인/상세기관 수급 데이터 (국내 주식 전용, pykrx 활용)"""
+        """KIS API로 외인/기관 수급 + 공매도 잔고 + 거래대금 수집"""
         try:
             code = self.ticker.replace('.KS', '').replace('.KQ', '')
-            if not code.isdigit():
-                self.supply_data = []
+            if not code.isdigit() or not KIS_AVAILABLE:
+                self.supply_data = {
+                    "investor_trend": [], "short_balance": {}, "trade_value_map": {}
+                }
                 return
-            
-            end = datetime.datetime.today().strftime('%Y%m%d')
-            # 휴장일 감안 여유있게 가져오기
-            start = (datetime.datetime.today() - datetime.timedelta(days=days*3)).strftime('%Y%m%d')
-            
-            df = stock.get_market_trading_volume_by_date(start, end, code, detail=True)
-            
-            if df.empty:
-                self.supply_data = []
-                return
-                
-            df = df.tail(days)
-            
-            result = []
-            for date, row in df.iterrows():
-                # pykrx의 detail=True 일 때의 컬럼명: 
-                # ['금융투자', '보험', '투신', '사모', '은행', '기타금융', '연기금', '기타법인', '개인', '외국인', '기타외국인', '전체']
-                # 참고: detail=True 이면 '기관합계', '외국인합계' 컬럼은 사라집니다.
-
-                fin_net = int(row.get('금융투자', 0))
-                insur_net = int(row.get('보험', 0))
-                trust_net = int(row.get('투신', 0))
-                pef_net = int(row.get('사모', 0)) # pykrx는 '사모'로 출력
-                bank_net = int(row.get('은행', 0))
-                etc_fin_net = int(row.get('기타금융', 0))
-                pension_net = int(row.get('연기금', 0))
-                
-                # 기관계 합산
-                o_net = fin_net + insur_net + trust_net + pef_net + bank_net + etc_fin_net + pension_net
-                
-                # 외국인 합계 (외국인 + 기타외국인)
-                f_net = int(row.get('외국인', 0)) + int(row.get('기타외국인', 0))
-                
-                # 개인
-                p_net = int(row.get('개인', 0))
-                
-                
-                result.append({
-                    "date": date.strftime('%Y-%m-%d'),
-                    "foreign_net": f_net,
-                    "institution_net": o_net,
-                    "individual_net": p_net,
-                    # 상세 기관
-                    "trust_net": trust_net,
-                    "pension_net": pension_net,
-                    "pef_net": pef_net,
-                    "bank_net": bank_net,
-                    "fin_net": fin_net,
-                    "insur_net": insur_net,
-                    "etc_fin_net": etc_fin_net
-                })
-            self.supply_data = result
-            
+            self.supply_data = fetch_supply_data(code, days=days)
         except Exception as e:
-            print(f"수급(pykrx) 데이터 수집 실패: {e}")
-            self.supply_data = []
+            print(f"수급 데이터 수집 실패: {e}")
+            self.supply_data = {
+                "investor_trend": [], "short_balance": {}, "trade_value_map": {}
+            }
 
+    # ────────────────────────────────────────────────
+    # 수급 스코어
+    # ────────────────────────────────────────────────
     def _score_supply(self):
-        """최근 수급을 스코어로 변환"""
         if not self.supply_data:
             return 0, []
-        
-        bonus = 0
+
+        bonus   = 0
         signals = []
-        
-        # 최근 3일 외인 연속 순매수 체크
-        recent = self.supply_data[-3:]
-        if len(recent) > 0:
-            foreign_consecutive = all(d['foreign_net'] > 0 for d in recent)
-            institution_today   = self.supply_data[-1]['institution_net'] > 0
-            
-            if foreign_consecutive and len(recent) == 3:
+
+        # ── 투자자별 매매동향 ──────────────────────────────
+        trend = self.supply_data.get("investor_trend", [])
+        if trend:
+            recent = trend[-3:]
+            today  = trend[-1]
+
+            foreign_consecutive = len(recent) == 3 and all(d['foreign_net'] > 0 for d in recent)
+            institution_today   = today['institution_net'] > 0
+            both_buying         = today['foreign_net'] > 0 and today['institution_net'] > 0
+
+            if both_buying:
+                bonus += 20
+                signals.append(
+                    f"🌍🏦 [쌍끌이 매수] 외국인({today['foreign_net']:+,}주)·기관({today['institution_net']:+,}주) "
+                    f"동시 순매수! 가장 강력한 수급 신호입니다."
+                )
+            elif foreign_consecutive:
                 bonus += 15
-                signals.append("🌍 [쌍끌이 수급] 외국인이 최근 3일 연속 순매수 중입니다. 세력이 들어오고 있습니다!")
-            
-            if institution_today:
+                signals.append(
+                    f"🌍 [외인 연속 매수] 외국인 3일 연속 순매수. 오늘 {today['foreign_net']:+,}주."
+                )
+            elif today['foreign_net'] > 0:
+                bonus += 8
+                signals.append(f"🌍 [외인 매수] 오늘 외국인 {today['foreign_net']:+,}주 순매수.")
+
+            if institution_today and not both_buying:
                 bonus += 10
-                signals.append("🏦 [기관 수급] 오늘 기관 메이저 수급도 순매수에 가담했습니다.")
-            
-            if not foreign_consecutive and self.supply_data[-1]['foreign_net'] < 0:
+                signals.append(f"🏦 [기관 매수] 오늘 기관 {today['institution_net']:+,}주 순매수.")
+
+            if today['foreign_net'] < 0 and today['institution_net'] < 0:
+                bonus -= 20
+                signals.append("⚠️ [쌍끌이 매도] 외국인·기관 동시 매도 중. 진입을 재고하세요.")
+            elif today['foreign_net'] < 0:
                 bonus -= 10
-                signals.append("⚠️ [수급 경 경고] 외국인이 오늘 단기 차익을 실현하며 매도 중입니다. 기술적 타점이 나왔더라도 진입 재고를 권장합니다.")
-                
+                signals.append(
+                    f"⚠️ [외인 매도] 오늘 외국인 {today['foreign_net']:,}주 순매도. 기술적 타점과 역행 중."
+                )
+
+        # ── 공매도 잔고 ────────────────────────────────────
+        short = self.supply_data.get("short_balance", {})
+        if short:
+            ratio      = short.get("balance_ratio", 0)
+            change_qty = short.get("change_qty", 0)
+
+            if ratio >= 5.0:
+                bonus -= 15
+                signals.append(f"🩳 [공매도 위험] 잔고 비율 {ratio:.2f}%. 매수세가 억눌릴 수 있습니다.")
+            elif ratio >= 2.0:
+                bonus -= 5
+                signals.append(f"🩳 [공매도 주의] 잔고 비율 {ratio:.2f}%.")
+
+            if change_qty > 0:
+                signals.append(f"📌 공매도 잔고 전일 대비 {change_qty:+,}주 증가.")
+            elif change_qty < 0:
+                bonus += 5
+                signals.append(f"✅ 공매도 잔고 전일 대비 {change_qty:,}주 감소. 숏커버링 가능성.")
+
+        # ── 거래대금 (KIS 정확값 기반) ──────────────────────
+        tv_map = self.supply_data.get("trade_value_map", {})
+        if tv_map and len(tv_map) >= 5:
+            values     = list(tv_map.values())
+            avg_value  = sum(values[:-1]) / max(len(values) - 1, 1)  # 오늘 제외 평균
+            today_value = values[-1]
+            ratio_tv    = today_value / avg_value if avg_value > 0 else 1.0
+
+            # 거래대금 포맷 (억 단위)
+            def fmt_value(v):
+                return f"{v / 1e8:.0f}억"
+
+            if ratio_tv >= 3.0 and today_value > 0:
+                bonus += 15
+                signals.append(
+                    f"💰 [거래대금 폭발] 오늘 거래대금 {fmt_value(today_value)} — "
+                    f"평균 대비 {ratio_tv:.1f}배! 강한 세력 개입 신호입니다."
+                )
+            elif ratio_tv >= 2.0:
+                bonus += 10
+                signals.append(
+                    f"💰 [거래대금 급증] 오늘 거래대금 {fmt_value(today_value)} — "
+                    f"평균 대비 {ratio_tv:.1f}배. 긍정적 신호입니다."
+                )
+            elif ratio_tv >= 1.5:
+                bonus += 5
+                signals.append(
+                    f"📊 [거래대금 증가] 오늘 거래대금 {fmt_value(today_value)} — "
+                    f"평균 대비 {ratio_tv:.1f}배."
+                )
+            elif ratio_tv <= 0.5:
+                # 거래대금 고갈 — VCP 눌림목 맥락에서는 긍정적
+                signals.append(
+                    f"💤 [거래대금 고갈] 오늘 거래대금 {fmt_value(today_value)} — "
+                    f"평균의 {ratio_tv:.1f}배. 에너지 응축 구간일 수 있습니다."
+                )
+
         return bonus, signals
 
+    # ────────────────────────────────────────────────
+    # 지표 계산
+    # ────────────────────────────────────────────────
     def calculate_indicators(self):
-        """
-        수집한 데이터에 기술적 지표(수학 계산)를 적용합니다.
-        """
         if self.micro_data.empty:
             return
 
         df = self.micro_data.copy()
-        
-        # 1. 이동평균선 상수 (Pine Script 설정 EMA 및 SMA50)
-        df['EMA_21'] = df['Close'].ewm(span=21, adjust=False).mean()
-        df['EMA_50'] = df['Close'].ewm(span=50, adjust=False).mean()
+
+        # 이동평균선
+        df['EMA_21']  = df['Close'].ewm(span=21, adjust=False).mean()
+        df['EMA_50']  = df['Close'].ewm(span=50, adjust=False).mean()
         df['EMA_200'] = df['Close'].ewm(span=200, adjust=False).mean()
-        df['SMA_50'] = df['Close'].rolling(window=50).mean()
+        df['SMA_50']  = df['Close'].rolling(window=50).mean()
 
-        # 2. RSI 계산 (14일, Wilder's Smoothing / RMA 방식 - 트레이딩뷰와 일치)
+        # RSI (Wilder's Smoothing — 트레이딩뷰와 일치)
         delta = df['Close'].diff()
-        gain = (delta.where(delta > 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-        loss = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
-        rs = gain / loss
-        df['RSI_14'] = 100 - (100 / (1 + rs))
+        gain  = delta.where(delta > 0, 0).ewm(alpha=1/14, adjust=False).mean()
+        loss  = (-delta.where(delta < 0, 0)).ewm(alpha=1/14, adjust=False).mean()
+        df['RSI_14'] = 100 - (100 / (1 + gain / loss))
 
-        # 3. ATR 계산 (14일, RMA 방식)
-        df['TR'] = np.maximum((df['High'] - df['Low']), 
-                   np.maximum(abs(df['High'] - df['Close'].shift(1)), 
-                              abs(df['Low'] - df['Close'].shift(1))))
+        # ATR
+        df['TR'] = np.maximum(
+            df['High'] - df['Low'],
+            np.maximum(
+                abs(df['High'] - df['Close'].shift(1)),
+                abs(df['Low']  - df['Close'].shift(1))
+            )
+        )
         df['ATR_14'] = df['TR'].ewm(alpha=1/14, adjust=False).mean()
-        
-        # 4. 거래량 평균 (20일)
+
+        # 거래량 평균
         df['Vol_SMA_20'] = df['Volume'].rolling(window=20).mean()
 
-        # --- 1안: MACD 계산 ---
-        df['ema_12'] = df['Close'].ewm(span=12, adjust=False).mean()
-        df['ema_26'] = df['Close'].ewm(span=26, adjust=False).mean()
-        df['MACD'] = df['ema_12'] - df['ema_26']
+        # ── 거래대금: KIS 정확값 우선, 없으면 yfinance 근사값 ──
+        tv_map = self.supply_data.get("trade_value_map", {})
+        if tv_map:
+            # KIS에서 가져온 날짜별 거래대금을 DataFrame 인덱스에 매핑
+            df['trading_value'] = df.index.strftime('%Y-%m-%d').map(tv_map)
+            # KIS 데이터가 없는 과거 날짜는 근사값으로 채움
+            mask = df['trading_value'].isna()
+            df.loc[mask, 'trading_value'] = df.loc[mask, 'Close'] * df.loc[mask, 'Volume']
+            print(f"[거래대금] KIS 정확값 {(~mask).sum()}일, 근사값 보완 {mask.sum()}일")
+        else:
+            # KIS 없을 때 전구간 근사값
+            df['trading_value'] = df['Close'] * df['Volume']
+
+        df['value_sma_20'] = df['trading_value'].rolling(20).mean()
+        df['value_ok']     = df['trading_value'] >= df['value_sma_20'] * 1.5   # 평균 1.5배 이상
+        df['value_surge']  = df['trading_value'] >= df['value_sma_20'] * 3.0   # 폭발 (3배 이상)
+        df['value_dry']    = df['trading_value'] <= df['value_sma_20'] * 0.5   # 고갈 (절반 이하)
+
+        # MACD
+        df['ema_12']      = df['Close'].ewm(span=12, adjust=False).mean()
+        df['ema_26']      = df['Close'].ewm(span=26, adjust=False).mean()
+        df['MACD']        = df['ema_12'] - df['ema_26']
         df['MACD_Signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
-        df['MACD_Hist'] = df['MACD'] - df['MACD_Signal']
+        df['MACD_Hist']   = df['MACD'] - df['MACD_Signal']
 
-        # --- 3안: VCP (변동성/거래량 고갈) 조건 계산 ---
-        # 최근 5일간의 고점-저점 폭이 ATR의 1.5배 이내로 수렴 (Tightness)
+        # VCP 조건
         df['recent_range'] = df['High'].rolling(5).max() - df['Low'].rolling(5).min()
-        df['vcp_tight'] = df['recent_range'] < (df['ATR_14'] * 1.5)
-        # 거래량 고갈: 최근 3일 중 거래량이 20일 최저치에 근접
-        df['vol_min_20'] = df['Volume'].rolling(20).min()
-        df['vcp_dry_vol'] = df['Volume'].rolling(3).min() <= (df['vol_min_20'] * 1.2)
+        df['vcp_tight']    = df['recent_range'] < (df['ATR_14'] * 1.5)
+        df['vol_min_20']   = df['Volume'].rolling(20).min()
+        # VCP 거래량 고갈: 거래대금 고갈 조건으로 업그레이드
+        df['vcp_dry_vol']  = df['value_dry']
 
-        # --- ATR Matrix 스펙 (extAtr) 계산 ---
+        # extATR (ATR Matrix)
         df['extAtr'] = (df['Close'] - df['SMA_50']) / df['ATR_14'].replace(0, np.nan)
 
-        # --- 매수 로직 베이스 ---
+        # 추세 조건
         df['trend_short'] = (df['Close'] > df['EMA_21']) | (df['EMA_21'] > df['EMA_50'])
         df['trend_swing'] = (df['EMA_21'] > df['EMA_50']) & (df['EMA_50'] > df['EMA_200'])
 
-        df['near_ema21'] = (df['Low'] <= df['EMA_21'] * 1.005) & (df['Low'] >= df['EMA_21'] * (1 - (df['ATR_14'] / df['Close']) * 1.5))
+        # 눌림목 조건
+        df['near_ema21'] = (
+            (df['Low'] <= df['EMA_21'] * 1.005) &
+            (df['Low'] >= df['EMA_21'] * (1 - (df['ATR_14'] / df['Close']) * 1.5))
+        )
         df['bullish_candle'] = df['Close'] > df['Open']
-        df['bounce'] = df['Close'] > df['Close'].shift(1)
-        df['rsi_ok'] = df['RSI_14'] >= 50
-        df['vol_ok'] = df['Volume'] >= df['Vol_SMA_20'] * 1.0
-        df['ema21_slope'] = df['EMA_21'] > df['EMA_21'].shift(2)
+        df['bounce']         = df['Close'] > df['Close'].shift(1)
+        df['rsi_ok']         = df['RSI_14'] >= 50
+        df['vol_ok']         = df['Volume'] >= df['Vol_SMA_20'] * 1.0
+        df['ema21_slope']    = df['EMA_21'] > df['EMA_21'].shift(2)
 
-        df['buy_short'] = df['near_ema21'] & df['bullish_candle'] & df['bounce'] & df['rsi_ok'] & df['vol_ok'] & df['trend_short']
+        # ── 매수 신호 ──────────────────────────────────────
+        df['buy_short'] = (
+            df['near_ema21'] & df['bullish_candle'] & df['bounce'] &
+            df['rsi_ok'] & df['vol_ok'] & df['trend_short']
+        )
 
-        # [1안] MACD 스윙: 기존 정배열 눌림목 + MACD 모멘텀 상승 반전(히스토그램 증가)
         df['macd_improving'] = df['MACD_Hist'] > df['MACD_Hist'].shift(1)
-        df['buy_swing_macd'] = df['near_ema21'] & df['bullish_candle'] & df['bounce'] & df['vol_ok'] & df['trend_swing'] & df['macd_improving']
+        df['buy_swing_macd'] = (
+            df['near_ema21'] & df['bullish_candle'] & df['bounce'] &
+            df['value_ok'] &          # ← 거래대금 1.5배 이상 조건으로 업그레이드
+            df['trend_swing'] & df['macd_improving']
+        )
 
-        # [3안] VCP 스윙: 21EMA 부근 + 수렴(전날까지) + 거래량 고갈(전날까지) + 오늘 양봉 반등 돌파
-        df['buy_swing_vcp'] = df['near_ema21'] & df['bullish_candle'] & df['bounce'] & df['trend_swing'] & df['vcp_tight'].shift(1) & df['vcp_dry_vol'].shift(1)
+        df['buy_swing_vcp'] = (
+            df['near_ema21'] & df['bullish_candle'] & df['bounce'] &
+            df['trend_swing'] &
+            df['vcp_tight'].shift(1) &
+            df['vcp_dry_vol'].shift(1)  # ← 거래대금 고갈 조건으로 업그레이드
+        )
 
         if self.mode == 'fibonacci':
-            latest_subset = df.tail(150)
-            self.fib_high = latest_subset['High'].max()
-            self.fib_low = latest_subset['Low'].min()
+            subset        = df.tail(150)
+            self.fib_high = subset['High'].max()
+            self.fib_low  = subset['Low'].min()
 
         self.micro_data = df
 
+    # ────────────────────────────────────────────────
+    # 분석
+    # ────────────────────────────────────────────────
     def analyze(self):
-        """
-        계산된 지표를 바탕으로 현재 상황을 분석합니다.
-        """
         self.calculate_indicators()
-        
-        # 데이터가 부족하면 에러 반환
+
         if len(self.micro_data) < 50:
             return {"error": "데이터 또는 상장 기간이 충분하지 않습니다."}
 
-        # 가장 최신 거래일의 데이터를 가져옴 (마지막 행)
         current = self.micro_data.iloc[-1]
-        prev = self.micro_data.iloc[-2]
-        
-        # 미시적(스윙) 패턴 스캔 기초 로직 -------------------
-        score = 0 
+        prev    = self.micro_data.iloc[-2]
+        score   = 0
         signals = []
 
         if self.mode == 'swing':
-            # --- 1. 동적 스코어 로직 (현재 상태 기준 합산) ---
             base_score = 30
             technicals = []
-            
-            # 정배열 점수
+
             if current['EMA_21'] > current['EMA_50'] and current['EMA_50'] > current['EMA_200']:
                 base_score += 15
                 technicals.append("완벽한 정배열(+15)")
             elif current['EMA_21'] > current['EMA_50']:
                 base_score += 5
-                
-            # 거래량 점수
+
             if current['Volume'] >= current.get('Vol_SMA_20', 0):
                 base_score += 10
                 technicals.append("긍정적 거래량(+10)")
-                
-            # RSI 점수 & 과열 경고
+
             if 50 <= current['RSI_14'] <= 70:
                 base_score += 10
                 technicals.append("RSI 매수 우위(+10)")
             elif current['RSI_14'] > 70:
                 base_score -= 15
-                signals.append("⚠️ RSI 70 초과 과매수 상태. 차익 실현 후 조정(풀백)을 기다리시길 권장합니다.")
-                
-            # MACD 모멘텀 점수
+                signals.append("⚠️ RSI 70 초과 과매수. 조정 후 재진입을 권장합니다.")
+
             if current['MACD_Hist'] > prev['MACD_Hist']:
                 base_score += 10
                 technicals.append("MACD 상승 모멘텀(+10)")
-                
-            if len(technicals) > 0:
-                signals.append(f"🔎 [현재 캔들 기술적 분석] {', '.join(technicals)} 요소가 확인되었습니다.")
+
+            if technicals:
+                signals.append(f"🔎 [기술적 분석] {', '.join(technicals)} 확인.")
 
             score += base_score
 
-            # --- 2. 다중 타점 탐색 로직 (최근 신호 중복 카운트) ---
+            # 타점 탐색
             recent_signal_found = False
-            for i in range(len(self.micro_data)-1, -1, -1):
-                row = self.micro_data.iloc[i]
+            for i in range(len(self.micro_data) - 1, -1, -1):
+                row      = self.micro_data.iloc[i]
                 days_ago = len(self.micro_data) - 1 - i
-                
-                if days_ago > 30: # 30일 이내의 타점만 브리핑에 표시
+                if days_ago > 30:
                     break
-                    
-                day_text = "오늘" if days_ago == 0 else f"{days_ago}일 전"
-                
-                hit_vcp = row.get('buy_swing_vcp', False)
-                hit_macd = row.get('buy_swing_macd', False)
-                hit_short = row.get('buy_short', False)
-                
+
+                day_text  = "오늘" if days_ago == 0 else f"{days_ago}일 전"
+                hit_vcp   = bool(row.get('buy_swing_vcp',  False))
+                hit_macd  = bool(row.get('buy_swing_macd', False))
+                hit_short = bool(row.get('buy_short',      False))
+
                 if hit_vcp or hit_macd or hit_short:
-                    combo_count = sum([bool(hit_vcp), bool(hit_macd), bool(hit_short)])
-                    
+                    combo_count = sum([hit_vcp, hit_macd, hit_short])
                     if days_ago == 0:
-                        score += (combo_count * 15) # 오늘 신호가 떴을 때 중복된 콤보 수만큼 대량 득점
-                        
+                        score += combo_count * 15
+
                     stop = round(min(row['Low'], row['EMA_21']) * 0.99, 2)
-                    
+
                     if combo_count > 1:
-                        signals.append(f"👑 [{combo_count}중첩 콤보 타점 포착! - {day_text}] 여러 스윙 패턴이 겹친 매우 강력하고 드문 타점입니다!")
-                    
+                        signals.append(
+                            f"👑 [{combo_count}중첩 콤보 - {day_text}] 여러 스윙 패턴이 겹친 강력한 타점!"
+                        )
                     if hit_vcp:
                         target1 = round(row['Close'] + row['ATR_14'] * 3.0, 2)
-                        signals.append(f"🟣 [VCP 스윙 포착 - {day_text}] 최근 변동폭이 잔잔하게 수렴하고 거래량이 고갈된 후 위로 에너지를 터뜨렸기 때문입니다!\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+                        signals.append(
+                            f"🟣 [VCP 스윙 - {day_text}] 거래대금 고갈 + 변동폭 수렴 후 반등!\n"
+                            f"  - 진입: {round(row['Close'], 2)}  목표: {target1}  손절: {stop}"
+                        )
                     if hit_macd:
                         target1 = round(row['Close'] + row['ATR_14'] * 2.0, 2)
-                        signals.append(f"🔵 [MACD 스윙 포착 - {day_text}] 21일선 부근까지 안정적으로 눌린 직후 MACD가 마이너스에서 다시 상승 반전(히스토그램 전환)하며 바닥을 다졌기 때문입니다!\n  - 진입가: {round(row['Close'], 2)}\n  - 목표가: {target1}\n  - 손절가: {stop}")
+                        signals.append(
+                            f"🔵 [MACD 스윙 - {day_text}] 21EMA 눌림 + MACD 반전 + 거래대금 확인!\n"
+                            f"  - 진입: {round(row['Close'], 2)}  목표: {target1}  손절: {stop}"
+                        )
                     if hit_short and not (hit_vcp or hit_macd):
-                        # 중복되지 않은 가장 단순한 기술적 반등일 때만 출력
                         target1 = round(row['Close'] + row['ATR_14'] * 1.5, 2)
-                        signals.append(f"🟩 [단기 매수 포착 - {day_text}] 21EMA 부근에 맞고 튀어오르는 단순한 기술적 단기 양봉 반등 타점입니다. (짧게 먹고 빠지는 용도)\n  - 진입가: {round(row['Close'], 2)}\n  - 최소 목표가: {target1}\n  - 손절가: {stop}")
-                        
+                        signals.append(
+                            f"🟩 [단기 - {day_text}] 21EMA 단기 양봉 반등 타점.\n"
+                            f"  - 진입: {round(row['Close'], 2)}  목표: {target1}  손절: {stop}"
+                        )
                     recent_signal_found = True
-                    break # 하루만 분석하고 종료
+                    break
 
             if not recent_signal_found:
-                signals.append("💬 최근 30일 내에 포착된 뚜렷한 매수 타점(화살표)이 차트에 없습니다.")
-                
-            # --- 4. 수급 데이터 코멘트 및 점수 ---
+                signals.append("💬 최근 30일 내 뚜렷한 매수 타점이 없습니다.")
+
             supply_score, supply_signals = self._score_supply()
-            score += supply_score
+            score   += supply_score
             signals.extend(supply_signals)
 
-            # --- 5. ATR Matrix 시너지 등락 ---
             extAtr = current['extAtr']
             if extAtr >= 7.0:
                 score -= 30
-                signals.append(f"🔥 [ATR Matrix 긴급 경고] 50일선 대비 {extAtr:.1f} ATR 만큼 극단적으로 치솟은 최상단 과열 구간입니다. 언제 패닉락이 떨어져도 이상하지 않으니 매수를 보류하세요!")
+                signals.append(f"🔥 [ATR Matrix 경고] {extAtr:.1f} ATR 극단 과열 구간!")
             elif extAtr <= -7.0:
                 score += 15
-                signals.append(f"💡 [ATR Matrix 낙주 기회] 주가가 50일선 기준 {abs(extAtr):.1f} ATR 만큼 바닥으로 곤두박질쳤습니다. 여기서 상승 반전한다면 엄청난 V자 랠리가 일어날 수 있습니다.")
-                
+                signals.append(f"💡 [ATR Matrix 낙주] {abs(extAtr):.1f} ATR 바닥 구간. V자 반등 주시.")
+
         elif self.mode == 'atr':
             score = 50
-            signals.append("🔎 [ATR 과열/침체 판독 센터] 현재 모드는 스프링의 탄성을 측정합니다. 50일 생명선(파란색)에서 주가가 너무 벗어나서 튕겨져 나갈 위기인지 측정합니다.")
-            
+            signals.append("🔎 [ATR 판독] 50일선 대비 탄성을 측정합니다.")
             extAtr = current['extAtr']
             if pd.isna(extAtr):
-                signals.append("데이터가 부족하여 ATR 계산을 할 수 없습니다.")
+                signals.append("데이터 부족으로 ATR 계산 불가.")
             else:
-                signals.append(f"📏 현재 이 주식은 50일 이동평균선(SMA50)을 기준으로 위/아래 방향으로 【 {extAtr:.2f} ATR 】 만큼 멀어져 있는 상태로 계산되었습니다.")
-                
+                signals.append(f"📏 현재 50일 SMA 기준 【 {extAtr:.2f} ATR 】 위치.")
                 if extAtr >= 7:
                     score = 0
-                    signals.append("🚨 [절대 매수 금지 단계] 7 ATR을 돌파하며 과열 피날레를 찍고 있습니다! 작전주이거나 쏠림 현상의 끝자락이니, 가진 자의 영역이며 익절 후 도망쳐야 합니다.")
+                    signals.append("🚨 [매수 금지] 7 ATR 이상 극단 과열!")
                 elif extAtr <= -7:
                     score = 90
-                    signals.append("🌈 [인생 반등 타점 단계] -7 ATR 아래로 떨어졌습니다! 모두가 주식을 버리고 도망가는 투매장입니다. 평균선(50일)으로 강력하게 다시 달라붙는 기술적 로켓 반등을 먹을 준비를 해야 합니다.")
+                    signals.append("🌈 [인생 반등] -7 ATR 투매 구간. 반등 준비.")
                 elif extAtr > 3:
                     score = 30
-                    signals.append("⚠️ 진입 주의 단계입니다. 주가의 거품이 단기적으로 살짝 낀 상태로 보이니, 스윙 타점을 원한다면 다시 이평선 부근으로 눌릴 때(0 근처)를 기다리세요.")
+                    signals.append("⚠️ 단기 과열. 이평선 눌림을 기다리세요.")
                 elif extAtr < -3:
                     score = 70
-                    signals.append("👍 과매도 구간(침체기)으로 진입 중입니다. 저평가되어 있으니 분할로 지지 여부를 체크하며 매수를 계획해볼 수 있는 구간입니다.")
+                    signals.append("👍 과매도 구간. 분할 매수 고려.")
                 else:
                     score = 50
-                    signals.append("📊 정상 궤도행. 현재 50일 이평선에 찰싹 달라붙어 건강하고 안정적인 궤도를 순항하고 있습니다.")
+                    signals.append("📊 50일선 정상 궤도 순항 중.")
 
         elif self.mode == 'fibonacci':
-            diff = self.fib_high - self.fib_low
-            fib_0 = self.fib_high
+            diff    = self.fib_high - self.fib_low
             fib_236 = self.fib_high - diff * 0.236
             fib_382 = self.fib_high - diff * 0.382
             fib_500 = self.fib_high - diff * 0.500
             fib_618 = self.fib_high - diff * 0.618
-            fib_1 = self.fib_low
-            
-            score = 50
-            signals.append(f"📐 [피보나치 되돌림 분석] 주식의 오르내림 파동에는 자연의 황금비율이 있습니다. 최근 150일간 최고점({round(self.fib_high,2)}) 대비 어디까지 '되돌림(눌림 조정)'을 겪고 있는지 계산합니다.")
-            
+            score   = 50
+            signals.append(
+                f"📐 [피보나치] 최근 150일 최고점({round(self.fib_high, 2)}) 기준 되돌림 분석."
+            )
             c = current['Close']
             if c >= fib_236:
                 score = 80
-                signals.append("🚀 현재 [0.236(23.6%)] 구간 위에서 아주 강하게 버티고 있습니다. 이건 살짝만 숨을 돌리고 이내 전고점을 한 번 더 돌파해버리려는 극강의 상승 의지입니다.")
+                signals.append("🚀 [0.236] 전고점 재돌파 시도 강한 상승 의지.")
             elif c >= fib_382:
                 score = 70
-                signals.append("📈 [0.382(38.2%)] 구간 근처의 지지를 테스트 중입니다. 가장 이상적이고 건강한 조정 템포를 가진 아주 평범한 스윙 타점 라인입니다.")
+                signals.append("📈 [0.382] 가장 이상적인 건강한 스윙 타점 구간.")
             elif c >= fib_500:
                 score = 50
-                signals.append("⏸️ 고점과 저점의 딱 절반인 [0.500(50%)] 구간입니다. 이 자리를 방어해내느냐 아니냐가 이번 추세가 끝난 건지 더 가려는 건지 판단하는 중대한 갈림길입니다.")
+                signals.append("⏸️ [0.500] 추세 지속 여부 결정 갈림길.")
             elif c >= fib_618:
                 score = 30
-                signals.append("👀 마지막 마지노선 [0.618(61.8%)] 황금비율 라인에 턱걸이했습니다. 이 선이 깨지고 더 떨어진다면 그것은 '단순 조정'이 아니라 '대세 하락 파동의 시작'으로 인정해야 하니 칼손절을 준비해야 합니다.")
+                signals.append("👀 [0.618] 마지막 마지노선. 이탈 시 대세 하락 전환.")
             else:
                 score = 10
-                signals.append("📉 0.618 방어선마저 완벽히 깨지고 추락했습니다. 상승의 수명이 다했으며 장기 시체산 구간이 기약 없이 펼쳐질 수 있습니다.")
+                signals.append("📉 0.618 붕괴. 상승 추세 종료 가능성.")
 
-        # 거시적 패턴 뼈대 ---------------------------------
-        # 향후 200일선, 월봉 지지선 추세 분석 결과를 위 score와 signals에 융합할 구역입니다.
-        macro_signal = "거시적(큰 그림) 분석 엔진은 현재 오프라인 상태(향후 연결 예정)입니다."
-            
-        display_ticker = f"{self.original_name} ({self.ticker})" if self.original_name != self.ticker else self.ticker
+        display_ticker = (
+            f"{self.original_name} ({self.ticker})"
+            if self.original_name != self.ticker else self.ticker
+        )
         self.analysis_result = {
-            "ticker": display_ticker,
-            "last_price": round(current['Close'], 2),
-            "score": min(100, max(0, score)), # 0~100 사이
-            "signals": signals,
-            "macro_status": macro_signal,
-            "mode": self.mode,
-            "supply_data": self.supply_data
+            "ticker":       display_ticker,
+            "last_price":   round(current['Close'], 2),
+            "score":        min(100, max(0, score)),
+            "signals":      signals,
+            "macro_status": "거시적 분석 엔진 오프라인 (향후 연결 예정).",
+            "mode":         self.mode,
+            "supply_data":  self.supply_data,
         }
-        
         if self.mode == 'fibonacci':
             self.analysis_result["fibonacci"] = {
-                "high": self.fib_high,
-                "fib_236": self.fib_high - (self.fib_high - self.fib_low) * 0.236,
-                "fib_382": self.fib_high - (self.fib_high - self.fib_low) * 0.382,
-                "fib_500": self.fib_high - (self.fib_high - self.fib_low) * 0.500,
-                "fib_618": self.fib_high - (self.fib_high - self.fib_low) * 0.618,
-                "low": self.fib_low,
+                "high":    self.fib_high,
+                "fib_236": self.fib_high - diff * 0.236,
+                "fib_382": self.fib_high - diff * 0.382,
+                "fib_500": self.fib_high - diff * 0.500,
+                "fib_618": self.fib_high - diff * 0.618,
+                "low":     self.fib_low,
             }
-        
         return self.analysis_result
-        
+
+    # ────────────────────────────────────────────────
+    # 차트 데이터
+    # ────────────────────────────────────────────────
     def get_chart_data(self):
-        """프론트엔드 차트로 그리기 위한 JSON 데이터를 추출합니다."""
-        df_clean = self.micro_data.dropna(subset=['Close'])
+        df_clean   = self.micro_data.dropna(subset=['Close'])
         chart_data = []
         for index, row in df_clean.iterrows():
             chart_data.append({
-                "time": index.strftime('%Y-%m-%d'),
-                "open": row['Open'],
-                "high": row['High'],
-                "low": row['Low'],
-                "close": row['Close'],
-                "ema_21": row['EMA_21'] if not pd.isna(row['EMA_21']) else None,
-                "ema_50": row['EMA_50'] if not pd.isna(row['EMA_50']) else None,
-                "ema_200": row['EMA_200'] if not pd.isna(row['EMA_200']) else None,
-                "sma_50": row['SMA_50'] if not pd.isna(row['SMA_50']) else None,
-                "ext_atr": row['extAtr'] if not pd.isna(row['extAtr']) else None,
-                "buy_short": bool(row['buy_short']),
+                "time":           index.strftime('%Y-%m-%d'),
+                "open":           row['Open'],
+                "high":           row['High'],
+                "low":            row['Low'],
+                "close":          row['Close'],
+                "ema_21":         row['EMA_21']  if not pd.isna(row['EMA_21'])  else None,
+                "ema_50":         row['EMA_50']  if not pd.isna(row['EMA_50'])  else None,
+                "ema_200":        row['EMA_200'] if not pd.isna(row['EMA_200']) else None,
+                "sma_50":         row['SMA_50']  if not pd.isna(row['SMA_50'])  else None,
+                "ext_atr":        row['extAtr']  if not pd.isna(row['extAtr'])  else None,
+                "buy_short":      bool(row['buy_short']),
                 "buy_swing_macd": bool(row.get('buy_swing_macd', False)),
-                "buy_swing_vcp": bool(row.get('buy_swing_vcp', False)),
-                "rsi": row['RSI_14'] if not pd.isna(row['RSI_14']) else None,
-                "atr": row['ATR_14'] if not pd.isna(row['ATR_14']) else None,
-                "stop_price": round(min(row['Low'], row['EMA_21']) * 0.99, 2) if not pd.isna(row['EMA_21']) else None,
+                "buy_swing_vcp":  bool(row.get('buy_swing_vcp',  False)),
+                "rsi":            row['RSI_14']  if not pd.isna(row['RSI_14'])  else None,
+                "atr":            row['ATR_14']  if not pd.isna(row['ATR_14'])  else None,
+                "trading_value":  int(row['trading_value']) if not pd.isna(row.get('trading_value', float('nan'))) else None,
+                "stop_price":     round(min(row['Low'], row['EMA_21']) * 0.99, 2)
+                                  if not pd.isna(row['EMA_21']) else None,
             })
         return chart_data
