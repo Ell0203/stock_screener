@@ -74,7 +74,7 @@ def get_investor_trend(stock_code, days=5):
     try:
         token = get_access_token()
         end   = datetime.datetime.today()
-        start = end - datetime.timedelta(days=days * 3)
+        start = end - datetime.timedelta(days=days * 5 + 10)  # 공휴일/주말 넉넉히 포함
 
         res = requests.get(
             f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-investor",
@@ -128,20 +128,20 @@ def get_short_sale_balance(stock_code):
     try:
         token = get_access_token()
 
+        end   = datetime.datetime.today()
+        start = end - datetime.timedelta(days=days * 5 + 10)
+
         res = requests.get(
             f"{KIS_BASE_URL}/uapi/domestic-stock/v1/quotations/daily-short-sale",
             headers=_get_headers(token, "FHPST04830000"),
             params={
                 "fid_cond_mrkt_div_code": "J",
                 "fid_input_iscd":         stock_code,
+                "fid_input_date_1":       start.strftime("%Y%m%d"),
+                "fid_input_date_2":       end.strftime("%Y%m%d"),
             },
             timeout=10
         )
-
-        if res.status_code == 404:
-            print(f"[KIS] 공매도 잔고 API 경로 404 — 비활성화")
-            return {}
-
         res.raise_for_status()
         data = res.json()
 

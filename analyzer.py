@@ -46,17 +46,34 @@ class QuantAnalyzer:
         self._fetch_macro_data()
         self._fetch_supply_data(days=5)
 
+
     def _fetch_micro_data(self):
+        import time
         print(f"[{self.ticker}] 미시적 데이터 수집 시작 (2y)...")
+
+        def _download(ticker_str, retries=3):
+            for attempt in range(retries):
+                try:
+                    data = yf.download(ticker_str, period="2y", interval="1d", progress=False)
+                    return data
+                except Exception as e:
+                    if attempt < retries - 1:
+                        print(f"[yfinance] {ticker_str} 재시도 {attempt+1}/{retries}: {e}")
+                        time.sleep(2 * (attempt + 1))
+                    else:
+                        print(f"[yfinance] {ticker_str} 최종 실패: {e}")
+                        return pd.DataFrame()
+
         if self.ticker.isdigit() and len(self.ticker) == 6:
-            data = yf.download(f"{self.ticker}.KS", period="2y", interval="1d", progress=False)
+            data = _download(f"{self.ticker}.KS")
             if data.empty:
                 self.ticker = f"{self.ticker}.KQ"
-                data = yf.download(self.ticker, period="2y", interval="1d", progress=False)
+                data = _download(self.ticker)
             else:
                 self.ticker = f"{self.ticker}.KS"
         else:
-            data = yf.download(self.ticker, period="2y", interval="1d", progress=False)
+            data = _download(self.ticker)
+
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.droplevel(1)
         self.micro_data = data
