@@ -199,11 +199,20 @@
                                 <th>개인 순매수</th>
                                 <th>외국인 순매수</th>
                                 <th>기관 순매수</th>
+                                <th>거래대금</th>
                             </tr>
                         </thead>
                         <tbody>
                         </tbody>
                     </table>
+                </div>
+                <!-- 공매도 잔고 상세 -->
+                <div id="shortBalanceDetail" style="display:none; margin-top:16px; padding:12px 16px; background:var(--bg-secondary,#1a1a2e); border-radius:8px; font-size:0.9em;">
+                    <span style="font-weight:600; margin-right:16px;">🩳 공매도 잔고</span>
+                    <span id="shortQty" style="margin-right:16px;"></span>
+                    <span id="shortRatio" style="margin-right:16px;"></span>
+                    <span id="shortValue" style="margin-right:16px;"></span>
+                    <span id="shortChange"></span>
                 </div>
             </div>
         </main>
@@ -495,46 +504,92 @@
             const signalsHtml = data.analysis.signals.map(s => `<li class="signal-item">${s}</li>`).join('');
             document.getElementById('signalList').innerHTML = signalsHtml;
 
-            // 수급 테이블 렌더링 및 공매도 잔고 추가
+            // 수급 테이블 렌더링
             const supplyObj = data.analysis.supply_data || {};
             const supplyData = supplyObj.investor_trend || [];
             const shortBalance = supplyObj.short_balance || {};
+            const tradeValueMap = supplyObj.trade_value_map || {};
             const supplyContainer = document.getElementById('supplyContainer');
 
             if (supplyData && supplyData.length > 0) {
                 supplyContainer.style.display = 'block';
                 const tbody = document.querySelector('#supplyTable tbody');
-                // 최신 날짜가 위로 오도록 뒤집기
+
+                // 거래대금 평균 계산 (마지막 날 제외)
+                const tvValues = Object.values(tradeValueMap);
+                const tvAvg = tvValues.length > 1
+                    ? tvValues.slice(0, -1).reduce((a, b) => a + b, 0) / (tvValues.length - 1)
+                    : 0;
+
+                const fmtNet = (val) => {
+                    if (val === undefined || val === null) return '-';
+                    const str = val.toLocaleString();
+                    return val > 0 ? `<span class="text-success">+${str}</span>`
+                        : (val < 0 ? `<span class="text-danger">${str}</span>` : '<span style="color:#666">0</span>');
+                };
+                const fmtValue = (date) => {
+                    const v = tradeValueMap[date];
+                    if (!v) return '<span style="color:#666">-</span>';
+                    const eok = (v / 1e8).toFixed(0);
+                    if (tvAvg > 0) {
+                        const ratio = v / tvAvg;
+                        let color = '#aaa';
+                        let badge = '';
+                        if (ratio >= 3.0)      { color = '#ff4d6d'; badge = ` <small>(${ratio.toFixed(1)}x🔥)</small>`; }
+                        else if (ratio >= 2.0)  { color = '#ff9f1c'; badge = ` <small>(${ratio.toFixed(1)}x)</small>`; }
+                        else if (ratio >= 1.5)  { color = '#2ec4b6'; badge = ` <small>(${ratio.toFixed(1)}x)</small>`; }
+                        else if (ratio <= 0.5)  { color = '#888'; badge = ` <small>(고갈)</small>`; }
+                        return `<span style="color:${color}">${eok}억${badge}</span>`;
+                    }
+                    return `<span style="color:#aaa">${eok}억</span>`;
+                };
+
                 const reversedSupply = [...supplyData].reverse();
-                const html = reversedSupply.map(row => {
-                    const fmt = (val) => {
-                        if (val === undefined || val === null) return '-';
-                        const str = val.toLocaleString();
-                        return val > 0 ? `<span class="text-success">+${str}</span>`
-                            : (val < 0 ? `<span class="text-danger">${str}</span>` : '<span style="color:#666">0</span>');
-                    };
-                    return `
-                        <tr>
-                            <td>${row.date.slice(5)}</td>
-                            <td>${fmt(row.individual_net)}</td>
-                            <td>${fmt(row.foreign_net)}</td>
-                            <td>${fmt(row.institution_net)}</td>
-                        </tr>
-                    `;
-                }).join('');
-                tbody.innerHTML = html;
+                const rows = reversedSupply.map(row => `
+                    <tr>
+                        <td>${row.date.slice(5)}</td>
+                        <td>${fmtNet(row.individual_net)}</td>
+                        <td>${fmtNet(row.foreign_net)}</td>
+                        <td>${fmtNet(row.institution_net)}</td>
+                        <td>${fmtValue(row.date)}</td>
+                    </tr>
+                `).join('');
+                tbody.innerHTML = rows;
 
-                // 공매도 잔고 정보 표출
+                // 공매도 일별추이 요약
                 const shortInfo = document.getElementById('shortBalanceInfo');
-                if (shortBalance.balance_qty !== undefined && shortBalance.balance_qty > 0) {
-                    const ratio = shortBalance.balance_ratio;
-                    let warningHtml = ratio >= 5 ? `<span class="text-danger">⚠️ 위험 (${ratio}%)</span>`
-                        : (ratio >= 2 ? `<span style="color:var(--warning-color)">주의 (${ratio}%)</span>` : `<span class="text-success">안전 (${ratio}%)</span>`);
+                const todayShort = shortBalance.today || {};
+                const volRlim = todayShort.ssts_vol_rlim || 0;
 
-                    shortInfo.innerHTML = `공매도 잔고: <b>${shortBalance.balance_qty.toLocaleString()}주</b> | 비중: ${warningHtml}`;
+                if (volRlim > 0) {
+                    const rlimColor = volRlim >= 10 ? 'var(--danger-color)'
+                        : (volRlim >= 5 ? 'var(--warning-color)' : 'var(--success-color)');
+                    shortInfo.innerHTML = `공매도 거래량 비중: <b style="color:${rlimColor}">${volRlim.toFixed(1)}%</b>`;
                 } else {
                     shortInfo.innerHTML = '';
                 }
+
+                // 공매도 상세 섹션
+                const detail = document.getElementById('shortBalanceDetail');
+                if (todayShort.ssts_cntg_qty > 0) {
+                    detail.style.display = 'block';
+                    const sstsQty = (todayShort.ssts_cntg_qty || 0).toLocaleString();
+                    const sstsPbmn = ((todayShort.ssts_tr_pbmn || 0) / 1e8).toFixed(0);
+                    const pbmnRlim = (todayShort.ssts_tr_pbmn_rlim || 0).toFixed(1);
+                    const volColor = volRlim >= 10 ? '#ff4d6d' : (volRlim >= 5 ? '#ff9f1c' : '#2ec4b6');
+
+                    document.getElementById('shortQty').innerHTML =
+                        `공매도 체결: <b>${sstsQty}주</b>`;
+                    document.getElementById('shortRatio').innerHTML =
+                        `거래량 비중: <b style="color:${volColor}">${volRlim.toFixed(1)}%</b>`;
+                    document.getElementById('shortValue').innerHTML =
+                        `거래대금: <b>${sstsPbmn}억</b>`;
+                    document.getElementById('shortChange').innerHTML =
+                        `거래대금 비중: <b>${pbmnRlim}%</b>`;
+                } else {
+                    detail.style.display = 'none';
+                }
+
             } else {
                 supplyContainer.style.display = 'none';
             }
