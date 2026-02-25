@@ -39,5 +39,7 @@ def analyze_stock():
         return jsonify({"error": f"분석 실패: {str(e)}"}), 500
 
 if __name__ == '__main__':
-    # 로컬에서만 접근 가능한 서버를 엽니다.
-    app.run(host='127.0.0.1', port=5000, debug=True)
+    import os
+    # Render 배포를 위해 0.0.0.0과 PORT 환경 변수 사용, 로컬에서는 5000 사용
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host='0.0.0.0', port=port, debug=True)
